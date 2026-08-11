@@ -1,0 +1,212 @@
+name: Xiaomi 11U — NoMount TEST
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  # Device env
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  DEVICE_NAME : "xiaomi_11U"
+  DEVICE_CODENAME : "star"
+
+  CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-gnu-"
+  EXTRA_CMDS : 'LD=ld.lld LLVM=1 LLVM_IAS=1 EXTRA_CFLAGS="-Wno-unused-function -Wno-frame-larger-than"'
+
+  KERNEL_SOURCE : "https://github.com/joel27/android_kernel_xiaomi_sm8350-miui.git"
+  KERNEL_BRANCH : "ASB-2024-10-05"
+
+  CLANG_SOURCE: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz"
+  CLANG_BRANCH : ""
+
+  GCC_GNU : false
+  GCC_64_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9.git"
+  GCC_64_BRANCH : "android12L-release"
+  GCC_32_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9.git"
+  GCC_32_BRANCH : "android12L-release"
+
+  DEFCONFIG_SOURCE: ""
+  DEFCONFIG_NAME : "vendor/star1_defconfig"
+  DEFCONFIG_ORIGIN_IMAGE: ""
+  DEFCONFIG_FROM_BOOT: false
+
+  KERNELSU_SOURCE : ""
+  KERNELSU_BRANCH : ""
+
+  KERNELSU_AUTO_GET : "true"
+  KERNELSU_AUTO_FORK : "resukisu"
+
+  SUSFS_ENABLE : true
+  SUSFS_FIXED : true
+
+  # ⬇️ NUEVO — activa el patch de NoMount
+  NOMOUNT_ENABLE: "true"
+
+  AK3_SOURCE : "https://github.com/osm0sis/Anykernel3.git"
+  AK3_BRANCH : "master"
+
+  BOOT_SOURCE : ""
+  NEED_DTBO : false
+  NEED_SAFE_DTBO : false
+  ROM_TEXT : "Kernel-ReSukiSU-NoMount-TEST"
+
+  PYTHON_VERSION: "3"
+  PACK_METHOD: "Anykernel3"
+  PACK_KMODULES: "false"
+
+  KERNELSU_METHOD: "shell"
+  KERNELSU_SUS_PATCH: "false"
+
+  PATCHES_SOURCE: "joel27/NonGKI_Kernel_Patches"
+  PATCHES_BRANCH: "mi_kernel"
+
+  SUSFS_FOLDER_FIXED: "mi11_evox_a16"
+  SUSFS_PATCH_FIXED: "susfs_fixed"
+
+  REKERNEL_ENABLE: "false"
+  HOOK_METHOD: "syscall"
+  KERNEL_PATCH: "false"
+
+  KPM_ENABLE: "true"
+  KPM_INLINE: "true"
+  KPM_KPATCH_NEXT: "false"
+  KPM_PATCH_SOURCE: "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/refs/heads/main/kpm/patch_linux"
+
+  BASEBAND_GUARD_ENABLE: "false"
+  BASEBAND_GUARD_BOOT: "false"
+  HIDE_STUFF: "false"
+
+  GENERATE_DTB: "false"
+  GENERATE_CHIP: "qcom"
+
+  BUILD_DEBUGGER: "false"
+  SKIP_PATCH: "false"
+  BUILD_OTHER_CONFIG: "false"
+  MERGE_CONFIG_FILES: "vendor/star_QGKI.config,vendor/xiaomi_QGKI.config"
+  FREE_MORE_SPACE: "false"
+
+jobs:
+  build-kernel:
+    name: Xiaomi11U (NoMount TEST)
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+
+    steps:
+      - name: ⏰ Checkout repository
+        uses: actions/checkout@v6
+
+      - name: ⌛️ Compilation environment preparation
+        uses: ./.github/workflows/build-env
+
+      - name: ⚙️ Get neccssary tools
+        uses: ./.github/workflows/build-ready
+
+      - name: 🪝 Patch Kernel of SUSFS
+        uses: ./.github/workflows/patch-susfs
+
+      - name: 🔗 Patch for no-kprobe
+        uses: ./.github/workflows/patch-no-kprobe
+
+      # ⬇️ NUEVO — descarga la implementación REAL de NoMount
+      # (JackA1ltman's patch-nomount solo inserta los hooks, no trae
+      # el archivo fuente real — hay que traerlo aparte)
+      - name: 📥 Fetch NoMount real implementation
+        if: env.NOMOUNT_ENABLE == 'true'
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          echo "=== Descargando nomount.c / nomount.h de maxsteeel/nomount ==="
+          curl -sL https://raw.githubusercontent.com/maxsteeel/nomount/main/kernel/src/nomount.c \
+            -o fs/nomount.c
+          curl -sL https://raw.githubusercontent.com/maxsteeel/nomount/main/kernel/src/nomount.h \
+            -o fs/nomount.h
+          echo "=== Verificar que se descargaron correctamente ==="
+          wc -l fs/nomount.c fs/nomount.h
+          head -3 fs/nomount.c
+
+      # ⬇️ NUEVO — el patch de hooks
+      - name: 🚫 Patch NoMount
+        if: env.NOMOUNT_ENABLE == 'true'
+        uses: ./.github/workflows/patch-nomount
+
+      - name: 🪛 Extra Kernel Options
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          echo "KBUILD_BUILD_TIMESTAMP=Fri Nov 14 08:26:51 UTC 2025" >> $GITHUB_ENV
+
+      - name: 🧰 Patch Kernel of Re:Kernel
+        uses: ./.github/workflows/patch-rekernel
+
+      - name: 🔒 Patch Kernel of Baseband Guard
+        uses: ./.github/workflows/patch-baseband-guard
+
+      - name: 🔧 Patch Hide Stuff
+        uses: ./.github/workflows/patch-hide-stuff
+
+      - name: 🩹 Patch Stock Config (fix mensaje HyperOS)
+        uses: ./.github/workflows/patch-stock-config
+
+      - name: 🚀 Build Process
+        uses: ./.github/workflows/build-process
+
+      - name: 📦 Package Anykernel3 Flash Zip
+        if: env.PACK_METHOD == 'Anykernel3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TIME=$(date +"%Y%m%d%H%M%S")
+          KERNEL_DIR="${GITHUB_WORKSPACE}/device_kernel"
+          TMP_DIR="${KERNEL_DIR}/tmp"
+          IMG_PATH="${KERNEL_DIR}/out/arch/arm64/boot/Image"
+          cd "${KERNEL_DIR}"
+          if [[ ! -f "${IMG_PATH}" ]]; then
+            echo "::error::❌ Build failed, Image not found"
+            exit 1
+          fi
+          IMG_SIZE=$(du -h "${IMG_PATH}" | awk '{print $1}')
+          echo "✅ Kernel image detected | Size: ${IMG_SIZE}"
+          rm -rf "${TMP_DIR}"
+          mkdir -p "${TMP_DIR}"
+
+          AK3_DIR="${KERNEL_DIR}/Anykernel3"
+          if [[ -d "${AK3_DIR}" ]]; then
+            curl -L https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o Anykernel3/anykernel.sh
+            chmod +x Anykernel3/anykernel.sh
+            sed -i \
+              -e 's/^name=.*/name="ReSukiSU-11U-NoMount-TEST"/' \
+              -e 's/^do\.devicecheck=.*/do.devicecheck=0/' \
+              -e 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=1/' \
+              -e 's/^BLOCK=.*/BLOCK=boot/' \
+              "${AK3_DIR}/anykernel.sh"
+          fi
+
+          cp -v "${IMG_PATH}" "${TMP_DIR}/Image"
+          if [[ "${{ env.PACK_KMODULES }}" == "true" ]]; then
+            MOD_DIR="${TMP_DIR}/modules/vendor/lib/modules"
+            mkdir -p "${MOD_DIR}"
+            find . -name "*.ko" -type f -print0 | xargs -0 cp -t "${MOD_DIR}/" 2>/dev/null || true
+            module_count=$(find "${MOD_DIR}" -name "*.ko" | wc -l)
+            [[ ${module_count} -eq 0 ]] && rm -rf "${TMP_DIR}/modules"
+          fi
+          [[ -d "${AK3_DIR}" ]] && cp -rp "${AK3_DIR}"/* "${TMP_DIR}/"
+          cd "${TMP_DIR}"
+          7za a -tzip -mx9 -mmt=on package.zip ./* >/dev/null
+          cd "${GITHUB_WORKSPACE}"
+
+          # ⬇️ Nombre claramente marcado como TEST — para no confundirlo
+          # nunca con tu zip estable
+          FINAL_ZIP="Star-Kernel-NoMount-TEST-${TIME}.zip"
+          cp -fp "${TMP_DIR}/package.zip" "${FINAL_ZIP}"
+          echo "PACK_NAME=${FINAL_ZIP}" >> "${GITHUB_ENV}"
+          echo "✅ Zip generado: ${FINAL_ZIP}"
+          rm -rf "${TMP_DIR}"
+
+      - name: 🚀 Upload Artifact to Actions
+        uses: actions/upload-artifact@v4
+        if: env.PACK_METHOD == 'Anykernel3'
+        with:
+          name: Star-Kernel-NoMount-TEST
+          path: ${{ env.PACK_NAME }}
+          compression-level: 0
