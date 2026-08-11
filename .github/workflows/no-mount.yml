@@ -74,15 +74,16 @@ env:
 
   BASEBAND_GUARD_ENABLE: "false"
   BASEBAND_GUARD_BOOT: "false"
-  HIDE_STUFF: "false"
 
   GENERATE_DTB: "false"
   GENERATE_CHIP: "qcom"
 
   BUILD_DEBUGGER: "false"
   SKIP_PATCH: "false"
+  
   BUILD_OTHER_CONFIG: "false"
   MERGE_CONFIG_FILES: "vendor/star_QGKI.config,vendor/xiaomi_QGKI.config"
+  
   FREE_MORE_SPACE: "false"
 
 jobs:
@@ -138,6 +139,9 @@ jobs:
 
       - name: 🧰 Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
+
+      - name: 💿 Patch Kernel of Droidspaces
+        uses: ./.github/workflows/patch-droidspaces
 
       - name: 🔒 Patch Kernel of Baseband Guard
         uses: ./.github/workflows/patch-baseband-guard
