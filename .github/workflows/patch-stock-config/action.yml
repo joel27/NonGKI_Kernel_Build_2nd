@@ -1,0 +1,25 @@
+name: 'Patch Stock Config'
+description: 'Apply stock_config patch (5.4 compat) - fix HyperOS boot warning message'
+
+runs:
+  using: "composite"
+  steps:
+    - name: 🩹 Apply stock_config patch (5.4 compat)
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/device_kernel"
+
+        git clone --depth=1 https://github.com/joel27/esk_builder.git /tmp/esk_builder
+
+        # Ajustá esta ruta al nombre real que le pongas a la versión 5.4
+        # del patch (para no pisar el original de 5.10 en el mismo repo)
+        PATCH_FILE="/tmp/esk_builder/kernel_patches/stock_config_5.4.patch"
+
+        if [[ ! -f "${PATCH_FILE}" ]]; then
+          echo "::error::No se encontró ${PATCH_FILE} — subí la versión 5.4 del patch a esk_builder primero"
+          exit 1
+        fi
+
+        patch -p1 --fuzz=3 --no-backup-if-mismatch < "${PATCH_FILE}"
+        echo "✅ stock_config (5.4) aplicado"
