@@ -142,9 +142,6 @@ jobs:
       - name: 🔒 Patch Kernel of Baseband Guard
         uses: ./.github/workflows/patch-baseband-guard
 
-      - name: 🔧 Patch Hide Stuff
-        uses: ./.github/workflows/patch-hide-stuff
-
       - name: 🩹 Patch Stock Config (fix mensaje HyperOS)
         uses: ./.github/workflows/patch-stock-config
 
