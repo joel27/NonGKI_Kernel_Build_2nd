@@ -157,7 +157,7 @@ jobs:
             curl -L https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o Anykernel3/anykernel.sh
             chmod +x Anykernel3/anykernel.sh
             sed -i \
-              -e 's/^name=.*/name="ReSukiSU-11U-NoMount-TEST"/' \
+              -e 's/^name=.*/name="ReSukiSU-11U-Resukisu"/' \
               -e 's/^do\.devicecheck=.*/do.devicecheck=0/' \
               -e 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=1/' \
               -e 's/^BLOCK=.*/BLOCK=boot/' \
