@@ -80,7 +80,7 @@ env:
   BUILD_DEBUGGER: "false"
   SKIP_PATCH: "false"
   
-  BUILD_OTHER_CONFIG: "true"
+  BUILD_OTHER_CONFIG: "false"
   MERGE_CONFIG_FILES: "vendor/star_QGKI.config,vendor/xiaomi_QGKI.config"
   
   FREE_MORE_SPACE: "false"
