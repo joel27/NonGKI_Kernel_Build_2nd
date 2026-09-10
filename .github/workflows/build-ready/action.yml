@@ -146,13 +146,13 @@ runs:
                 fi
 
             elif [[ "${{ env.KERNELSU_AUTO_FORK }}" == "sukisu" ]]; then
-                KERNELSU_AUTHOR="SukiSU-Ultra"
+                KERNELSU_AUTHOR="joel27"
                 KERNELSU_NAME="SukiSU-Ultra"
                 KERNELSU_ORIGIN_BRANCH="main"
                 if [[ "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
-                    KERNELSU_BRANCH="builtin"
+                    KERNELSU_BRANCH="main"
                 else
-                    KERNELSU_BRANCH="builtin"
+                    KERNELSU_BRANCH="main"
                 fi
 
             elif [[ "${{ env.KERNELSU_AUTO_FORK }}" == "next" ]]; then
