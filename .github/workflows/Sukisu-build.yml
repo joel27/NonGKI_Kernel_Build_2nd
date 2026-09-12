@@ -104,6 +104,15 @@ jobs:
       - name: ⚙️ Get neccssary tools
         uses: ./.github/workflows/build-ready
 
+      - name: 🩹 Fix SukiSU-Ultra ksud.c hook calls (patch rejects this hunk)
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel/drivers/kernelsu"
+          if [[ "${{ env.KERNELSU_SOURCE }}" == *SukiSU* ]] || [[ "${{ env.KERNELSU_AUTO_FORK }}" == "sukisu" ]]; then
+            sed -i '/ksu_selinux_hide_handle_post_fs_data();/d' runtime/ksud.c
+            sed -i '/ksu_selinux_hide_handle_second_stage();/d' runtime/ksud.c
+            echo "[+] ksud.c hook calls removed directly (bypass patch rejection)"
+          fi
+
       - name: 🪝 Patch Kernel of SUSFS
         uses: ./.github/workflows/patch-susfs
 
