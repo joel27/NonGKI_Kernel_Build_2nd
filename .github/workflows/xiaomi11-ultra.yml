@@ -41,7 +41,7 @@ env:
 
   NOMOUNT_ENABLE: "true"
 
-  AK3_SOURCE : "https://github.com/osm0sis/Anykernel3.git"
+  AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
   AK3_BRANCH : "master"
 
   BOOT_SOURCE : ""
@@ -50,7 +50,7 @@ env:
   ROM_TEXT : "Kernel-ReSukiSU"
 
   PYTHON_VERSION: "3"
-  PACK_METHOD: "Anykernel3"
+  PACK_METHOD: "AnyKernel3"
   PACK_KMODULES: "false"
 
   KERNELSU_METHOD: "shell"
@@ -63,6 +63,7 @@ env:
   SUSFS_PATCH_FIXED: "susfs_fixed"
 
   REKERNEL_ENABLE: "false"
+  DROIDSPACES_ENABLE: "false"
   HOOK_METHOD: "syscall"
   KERNEL_PATCH: "false"
 
@@ -133,8 +134,8 @@ jobs:
       - name: 🚀 Build Process
         uses: ./.github/workflows/build-process
 
-      - name: 📦 Package Anykernel3 Flash Zip
-        if: env.PACK_METHOD == 'Anykernel3'
+      - name: 📦 Package AnyKernel3 Flash Zip
+        if: env.PACK_METHOD == 'AnyKernel3'
         shell: bash
         run: |
           set -euo pipefail
@@ -152,10 +153,14 @@ jobs:
           rm -rf "${TMP_DIR}"
           mkdir -p "${TMP_DIR}"
 
-          AK3_DIR="${KERNEL_DIR}/Anykernel3"
+          AK3_DIR="${KERNEL_DIR}/AnyKernel3"
+          if [[ ! -d "${AK3_DIR}" ]]; then
+            echo "::error::❌ AnyKernel3 not found in ${AK3_DIR}"
+            exit 1
+          fi
           if [[ -d "${AK3_DIR}" ]]; then
-            curl -L https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o Anykernel3/anykernel.sh
-            chmod +x Anykernel3/anykernel.sh
+            curl -fsSL --retry 3 https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o "${AK3_DIR}/anykernel.sh"
+            chmod +x "${AK3_DIR}/anykernel.sh"
             sed -i \
               -e 's/^name=.*/name="ReSukiSU-11U-Resukisu"/' \
               -e 's/^do\.devicecheck=.*/do.devicecheck=0/' \
@@ -184,8 +189,8 @@ jobs:
           rm -rf "${TMP_DIR}"
 
       - name: 🚀 Upload Artifact to Actions
-        uses: actions/upload-artifact@v4
-        if: env.PACK_METHOD == 'Anykernel3'
+        uses: actions/upload-artifact@v7
+        if: env.PACK_METHOD == 'AnyKernel3'
         with:
           name: Star-Kernel-Resukisu-Tech
           path: ${{ env.PACK_NAME }}
