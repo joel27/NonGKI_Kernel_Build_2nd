@@ -39,7 +39,7 @@ env:
   SUSFS_ENABLE : true
   SUSFS_FIXED : true
 
-  NOMOUNT_ENABLE: "true"
+  NOMOUNT_ENABLE: "false"
 
   AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
   AK3_BRANCH : "master"
@@ -111,8 +111,8 @@ jobs:
       - name: 🔗 Patch for no-kprobe
         uses: ./.github/workflows/patch-no-kprobe
 
-      - name: 🚫 Patch NoMount
-        uses: ./.github/workflows/patch-nomount
+   #   - name: 🚫 Patch NoMount
+   #     uses: ./.github/workflows/patch-nomount
 
       - name: 🪛 Extra Kernel Options
         run: |
