@@ -105,6 +105,15 @@ jobs:
       - name: ⚙️ Get neccssary tools
         uses: ./.github/workflows/build-ready
 
+      - name: 🔢 Fix SukiSU-Ultra version (bypass GitHub API rate limit)
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel/drivers/kernelsu"
+          if [[ "${{ env.KERNELSU_SOURCE }}" == *SukiSU* ]] || [[ "${{ env.KERNELSU_AUTO_FORK }}" == "sukisu" ]]; then
+            REAL_COUNT=$(git rev-list --count HEAD)
+            echo "GITHUB_COMMITS=${REAL_COUNT}" >> $GITHUB_ENV
+            echo "[+] Conteo real de commits forzado: ${REAL_COUNT}"
+          fi
+
       - name: 🩹 Fix SukiSU-Ultra ksud.c hook calls (patch rejects this hunk)
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel/drivers/kernelsu"
