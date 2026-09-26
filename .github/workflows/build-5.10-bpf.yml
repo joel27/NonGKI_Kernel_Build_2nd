@@ -1,4 +1,4 @@
-name: Xiaomi 11U — Resukisu
+name: Xiaomi 11U-5.10BPF — Resukisu
 
 on:
   workflow_call:
