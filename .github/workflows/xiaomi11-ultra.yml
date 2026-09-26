@@ -13,8 +13,8 @@ env:
   CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-gnu-"
   EXTRA_CMDS : 'LD=ld.lld LLVM=1 LLVM_IAS=1 EXTRA_CFLAGS="-Wno-unused-function -Wno-frame-larger-than"'
 
-  KERNEL_SOURCE : "hhttps://github.com/MiYume0721/android_kernel_xiaomi_sm8350_miyume.git"
-  KERNEL_BRANCH : "main"
+  KERNEL_SOURCE : "https://github.com/joel27/android_kernel_xiaomi_sm8350-miui.git"
+  KERNEL_BRANCH : "Hyper-F17"
 
   CLANG_SOURCE: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz"
   CLANG_BRANCH : ""
