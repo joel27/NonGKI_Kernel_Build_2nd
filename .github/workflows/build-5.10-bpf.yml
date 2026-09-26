@@ -1,4 +1,4 @@
-name: Xiaomi 11U-5.10BPF — Resukisu
+name: Xiaomi 11U — Resukisu
 
 on:
   workflow_call:
@@ -13,8 +13,8 @@ env:
   CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-gnu-"
   EXTRA_CMDS : 'LD=ld.lld LLVM=1 LLVM_IAS=1 EXTRA_CFLAGS="-Wno-unused-function -Wno-frame-larger-than"'
 
-  KERNEL_SOURCE : "https://github.com/joel27/Android_Kernel_Xiaomi_Sm8350_Star"
-  KERNEL_BRANCH : "star-5.10bpf"
+  KERNEL_SOURCE : "https://github.com/MiYume0721/android_kernel_xiaomi_sm8350_miyume.git"
+  KERNEL_BRANCH : "main"
 
   CLANG_SOURCE: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz"
   CLANG_BRANCH : ""
@@ -39,9 +39,9 @@ env:
   SUSFS_ENABLE : true
   SUSFS_FIXED : true
 
-  NOMOUNT_ENABLE: "true"
+  NOMOUNT_ENABLE: "false"
 
-  AK3_SOURCE : "https://github.com/osm0sis/Anykernel3.git"
+  AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
   AK3_BRANCH : "master"
 
   BOOT_SOURCE : ""
@@ -50,7 +50,7 @@ env:
   ROM_TEXT : "Kernel-ReSukiSU"
 
   PYTHON_VERSION: "3"
-  PACK_METHOD: "Anykernel3"
+  PACK_METHOD: "AnyKernel3"
   PACK_KMODULES: "false"
 
   KERNELSU_METHOD: "shell"
@@ -63,6 +63,7 @@ env:
   SUSFS_PATCH_FIXED: "susfs_fixed"
 
   REKERNEL_ENABLE: "false"
+  DROIDSPACES_ENABLE: "false"
   HOOK_METHOD: "syscall"
   KERNEL_PATCH: "false"
 
@@ -88,7 +89,7 @@ env:
 jobs:
   build-kernel:
     name: Xiaomi11U (Resukisu)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
@@ -110,14 +111,13 @@ jobs:
       - name: 🔗 Patch for no-kprobe
         uses: ./.github/workflows/patch-no-kprobe
 
-      - name: 🚫 Patch NoMount
-        uses: ./.github/workflows/patch-nomount
+   #   - name: 🚫 Patch NoMount
+   #     uses: ./.github/workflows/patch-nomount
 
       - name: 🪛 Extra Kernel Options
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
           echo "KBUILD_BUILD_TIMESTAMP=Fri Nov 14 08:26:51 UTC 2025" >> $GITHUB_ENV
-
       - name: 🧰 Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
 
@@ -133,8 +133,8 @@ jobs:
       - name: 🚀 Build Process
         uses: ./.github/workflows/build-process
 
-      - name: 📦 Package Anykernel3 Flash Zip
-        if: env.PACK_METHOD == 'Anykernel3'
+      - name: 📦 Package AnyKernel3 Flash Zip
+        if: env.PACK_METHOD == 'AnyKernel3'
         shell: bash
         run: |
           set -euo pipefail
@@ -151,11 +151,14 @@ jobs:
           echo "✅ Kernel image detected | Size: ${IMG_SIZE}"
           rm -rf "${TMP_DIR}"
           mkdir -p "${TMP_DIR}"
-
-          AK3_DIR="${KERNEL_DIR}/Anykernel3"
+          AK3_DIR="${KERNEL_DIR}/AnyKernel3"
+          if [[ ! -d "${AK3_DIR}" ]]; then
+            echo "::error::❌ AnyKernel3 not found in ${AK3_DIR}"
+            exit 1
+          fi
           if [[ -d "${AK3_DIR}" ]]; then
-            curl -L https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o Anykernel3/anykernel.sh
-            chmod +x Anykernel3/anykernel.sh
+            curl -fsSL --retry 3 https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o "${AK3_DIR}/anykernel.sh"
+            chmod +x "${AK3_DIR}/anykernel.sh"
             sed -i \
               -e 's/^name=.*/name="ReSukiSU-11U-Resukisu"/' \
               -e 's/^do\.devicecheck=.*/do.devicecheck=0/' \
@@ -163,7 +166,6 @@ jobs:
               -e 's/^BLOCK=.*/BLOCK=boot/' \
               "${AK3_DIR}/anykernel.sh"
           fi
-
           cp -v "${IMG_PATH}" "${TMP_DIR}/Image"
           if [[ "${{ env.PACK_KMODULES }}" == "true" ]]; then
             MOD_DIR="${TMP_DIR}/modules/vendor/lib/modules"
@@ -176,16 +178,14 @@ jobs:
           cd "${TMP_DIR}"
           7za a -tzip -mx9 -mmt=on package.zip ./* >/dev/null
           cd "${GITHUB_WORKSPACE}"
-
           FINAL_ZIP="Star-Kernel-Resukisu-TechMaster-${TIME}.zip"
           cp -fp "${TMP_DIR}/package.zip" "${FINAL_ZIP}"
           echo "PACK_NAME=${FINAL_ZIP}" >> "${GITHUB_ENV}"
           echo "✅ Zip generado: ${FINAL_ZIP}"
           rm -rf "${TMP_DIR}"
-
       - name: 🚀 Upload Artifact to Actions
-        uses: actions/upload-artifact@v4
-        if: env.PACK_METHOD == 'Anykernel3'
+        uses: actions/upload-artifact@v7
+        if: env.PACK_METHOD == 'AnyKernel3'
         with:
           name: Star-Kernel-Resukisu-Tech
           path: ${{ env.PACK_NAME }}
