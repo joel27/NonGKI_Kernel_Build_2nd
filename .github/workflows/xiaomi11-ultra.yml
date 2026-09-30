@@ -102,7 +102,7 @@ jobs:
       - name: ⌛️ Compilation environment preparation
         uses: ./.github/workflows/build-env
 
-      - name: ⚙️ Get neccssary tools
+      - name: ⚙️ Get necessary tools
         uses: ./.github/workflows/build-ready
 
       - name: 🪝 Patch Kernel of SUSFS
@@ -110,9 +110,6 @@ jobs:
 
       - name: 🔗 Patch for no-kprobe
         uses: ./.github/workflows/patch-no-kprobe
-
-      - name: 🚫 Patch NoMount
-        uses: ./.github/workflows/patch-nomount
 
       - name: 🪛 Extra Kernel Options
         run: |
@@ -127,6 +124,9 @@ jobs:
 
       - name: 🔒 Patch Kernel of Baseband Guard
         uses: ./.github/workflows/patch-baseband-guard
+
+      - name: 🚫 Patch NoMount
+        uses: ./.github/workflows/patch-nomount
 
       - name: 🩹 Patch Stock Config (fix mensaje HyperOS)
         uses: ./.github/workflows/patch-stock-config
