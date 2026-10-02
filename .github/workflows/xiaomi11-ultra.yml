@@ -81,7 +81,7 @@ env:
   BUILD_DEBUGGER: "false"
   SKIP_PATCH: "false"
   
-  BUILD_OTHER_CONFIG: "false"
+  BUILD_OTHER_CONFIG: "true"
   MERGE_CONFIG_FILES: "vendor/star_QGKI.config,vendor/xiaomi_QGKI.config"
   
   FREE_MORE_SPACE: "false"
@@ -162,7 +162,7 @@ jobs:
             curl -fsSL --retry 3 https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o "${AK3_DIR}/anykernel.sh"
             chmod +x "${AK3_DIR}/anykernel.sh"
             sed -i \
-              -e 's/^name=.*/name="ReSukiSU-11U-Resukisu"/' \
+              -e 's/^name=.*/name="11U-Resukisu"/' \
               -e 's/^do\.devicecheck=.*/do.devicecheck=0/' \
               -e 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=1/' \
               -e 's/^BLOCK=.*/BLOCK=boot/' \
@@ -182,7 +182,7 @@ jobs:
           7za a -tzip -mx9 -mmt=on package.zip ./* >/dev/null
           cd "${GITHUB_WORKSPACE}"
 
-          FINAL_ZIP="Star-Kernel-Resukisu-TechMaster-${TIME}.zip"
+          FINAL_ZIP="Kernel-Resukisu-TechMaster-11U-${TIME}.zip"
           cp -fp "${TMP_DIR}/package.zip" "${FINAL_ZIP}"
           echo "PACK_NAME=${FINAL_ZIP}" >> "${GITHUB_ENV}"
           echo "✅ Zip generado: ${FINAL_ZIP}"
