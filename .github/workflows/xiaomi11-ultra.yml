@@ -34,7 +34,7 @@ env:
   KERNELSU_BRANCH : ""
 
   KERNELSU_AUTO_GET : "true"
-  KERNELSU_AUTO_FORK : "resukisu"
+  KERNELSU_AUTO_FORK : "bakasu"
 
   SUSFS_ENABLE : true
   SUSFS_FIXED : true
