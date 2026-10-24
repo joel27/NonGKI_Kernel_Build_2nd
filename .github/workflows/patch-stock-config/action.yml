@@ -10,11 +10,7 @@ runs:
         set -euo pipefail
         cd "$GITHUB_WORKSPACE/device_kernel"
 
-        git clone --depth=1 https://github.com/joel27/Tech_builder.git /tmp/Tech_builder
-
-        # Ajustá esta ruta al nombre real que le pongas a la versión 5.4
-        # del patch (para no pisar el original de 5.10 en el mismo repo)
-        PATCH_FILE="/tmp/Tech_builder/kernel_patches/stock_config_5.4.patch"
+        PATCH_FILE="/tmp/Patches/stock_config_5.4.patch"
 
         if [[ ! -f "${PATCH_FILE}" ]]; then
           echo "::error::No se encontró ${PATCH_FILE} — subí la versión 5.4 del patch a Tech_builder primero"
