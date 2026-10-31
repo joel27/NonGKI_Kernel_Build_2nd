@@ -13,7 +13,7 @@ env:
   EXTRA_CMDS : "BRAND_SHOW_FLAG=oneplus LD=ld.lld LLVM=1 LLVM_IAS=1"
 
   KERNEL_SOURCE : "https://github.com/JackA1ltman/android_kernel_oneplus_sm8250_los_noksu.git"
-  KERNEL_BRANCH : "upstream-latest"
+  KERNEL_BRANCH : "stable/android17"
 
   CLANG_SOURCE : "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.0/LLVM-20.1.0-Linux-X64.tar.xz"
   CLANG_BRANCH : ""
@@ -82,8 +82,8 @@ env:
   BUILD_DEBUGGER: "false" # Output build errors.
   SKIP_PATCH: "false" # Ignore errors found in Patch Debugger.
 
-  BUILD_OTHER_CONFIG: "false" # Merge config files.
-  MERGE_CONFIG_FILES: "vendor/debugfs.config,vendor/lahaina_QGKI.config"
+  BUILD_OTHER_CONFIG: "true" # Merge config files.
+  MERGE_CONFIG_FILES: "oneplus.config"
 
   FREE_MORE_SPACE: "false" # if u want get more space, enabled it.
 
@@ -117,7 +117,28 @@ jobs:
         run: |
           # Only ${{ env.DEVICE_NAME }} use it.
           cd $GITHUB_WORKSPACE/device_kernel
-          # Nothing
+
+          # Install Some packages
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt update
+          sudo apt install libbpf-dev -y
+
+          # Install Pahole
+          sudo apt build-dep pahole
+          sudo apt install cmake libbpf-dev libdw-dev
+
+          git clone https://github.com/acmel/dwarves.git  --depth 1
+          cd dwarves
+          mkdir build && cd build
+
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+
+          pahole --version
+
+          cd ../../
 
       - name: 🧰 Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
