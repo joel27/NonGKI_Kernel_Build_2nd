@@ -4,7 +4,8 @@
 #
 # - Autónomo: no usa los composites del framework, funciona en cualquier repo
 #   (basta con ponerlo en .github/workflows/).
-# - KernelSU/SUSFS ya vienen dentro del árbol: aquí no se parchea nada.
+# - KernelSU/SUSFS ya vienen dentro del árbol: no se parchea nada, solo se activan por config
+#   (hooks manuales + SUSFS, ver KSU_OPTS).
 # - Se desactiva HEADERS_INSTALL (ver paso "Configurar kernel").
 # - Si algo falla se crea el artifact "hyperos-log-fallo-N" con un resumen,
 #   los errores detectados y el log completo de cada fase (make incluido).
@@ -40,6 +41,15 @@ env:
   ZIP_PREFIX: "Kernel-HyperOS-TechMaster-11U"
   REQUIRE_KSU: "true"   # "false" para permitir compilar sin KernelSU
 
+  # KernelSU (BakaSU) + SUSFS: las mismas opciones de tu workflow BakaSU. Sin hooks manuales BakaSU usa
+  # los de tracepoint y corta la compilación ("TP hooks are incompatible with Non-GKI/GKI 1.0 kernels")
+  KSU_OPTS: >-
+    -e KSU -e KSU_MANUAL_HOOK -d KSU_TRACEPOINT_HOOK
+    -e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT
+    -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP
+    -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+    -e KSU_SUSFS_SUS_SU -d KSU_SUSFS_ENABLE_LOG
+
   # Variables que lee make (las mismas de tus workflows HyperOS que sí compilan)
   ARCH: arm64
   LLVM: "1"
@@ -59,7 +69,7 @@ env:
   CCACHE_BIN: ${{ github.workspace }}/ccache-bin
   LOG_DIR: ${{ github.workspace }}/logs
   CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: "2G"
+  CCACHE_MAXSIZE: "3G"
   CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
   CCACHE_NOHASHDIR: "true"
   CCACHE_HARDLINK: "true"
@@ -197,6 +207,9 @@ jobs:
             # falta para compilar la Image (el workflow BakaSU también lo desactiva).
             scripts/config --file out/.config -d HEADERS_INSTALL -d UAPI_HEADER_TEST
 
+            # KernelSU + SUSFS (el star_defconfig no trae estas opciones y BakaSU toma hooks de tracepoint)
+            scripts/config --file out/.config $KSU_OPTS
+
             if [ "$LITE_BUILD" = "true" ]; then
               echo "Modo ligero: LTO y CFI desactivados (como la config de MIUI)"
               scripts/config --file out/.config -e LTO_NONE -d LTO_CLANG -d CFI_CLANG -d CFI_PERMISSIVE
@@ -205,14 +218,16 @@ jobs:
             cp out/.config "$LOG_DIR/dotconfig.txt"
 
             echo "--- Config clave ---"
-            grep -E '^(# )?CONFIG_(HEADERS_INSTALL|LTO_NONE|LTO_CLANG|CFI_CLANG|SHADOW_CALL_STACK|UAPI_HEADER_TEST|KSU|KSU_SUSFS|LOCALVERSION)[= ]' out/.config || true
+            grep -E '^(# )?CONFIG_(HEADERS_INSTALL|LTO_NONE|LTO_CLANG|CFI_CLANG|SHADOW_CALL_STACK|UAPI_HEADER_TEST|LOCALVERSION)[= ]' out/.config || true
+            echo "--- KernelSU / SUSFS ---"
+            grep -E '^(# )?CONFIG_KSU' out/.config || true
 
-            if ! grep -qE '^CONFIG_KSU=[ym]$' out/.config; then
-              echo "::warning::CONFIG_KSU no quedó activo en el .config"
+            if ! grep -qE '^CONFIG_KSU=[ym]$' out/.config || ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' out/.config; then
+              echo "::warning::KernelSU mal configurado: hace falta CONFIG_KSU=y y CONFIG_KSU_MANUAL_HOOK=y"
               ls -d drivers/kernelsu KernelSU 2>&1 || true
               grep -n 'kernelsu' drivers/Makefile drivers/Kconfig || true
               if [ "$REQUIRE_KSU" = "true" ]; then
-                echo "::error::KernelSU no está habilitado (REQUIRE_KSU=true)"
+                echo "::error::KernelSU no quedó activo con hooks manuales (REQUIRE_KSU=true)"
                 exit 1
               fi
             fi
