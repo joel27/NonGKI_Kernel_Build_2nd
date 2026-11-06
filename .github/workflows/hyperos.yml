@@ -1,17 +1,11 @@
 # =============================================================================
-# Kernel HyperOS para el Mi 11 Ultra (star)
-#   Repo: joel27/android_kernel_xiaomi_sm8350-hyperos
-#
-# - Autónomo: no usa los composites del framework, funciona en cualquier repo
-#   (basta con ponerlo en .github/workflows/).
-# - KernelSU/SUSFS ya vienen dentro del árbol: no se parchea nada, solo se activan por config
-#   (modo SUSFS, ver KSU_OPTS).
-# - Se desactiva HEADERS_INSTALL (ver paso "Configurar kernel").
-# - Si algo falla se crea el artifact "hyperos-log-fallo-N" con un resumen,
-#   los errores detectados y el log completo de cada fase (make incluido).
+# Kernel HyperOS — Moderno y Modular (Xiaomi Mi 11 Ultra / star)
+# - Runner: Ubuntu 24.04
+# - Clang: ZyCromerZ 16.0.6 (20260807) sin respaldos a apt
+# - AnyKernel3: Dinámico (osm0sis) con script personalizado
 # =============================================================================
-name: Build Xiaomi11U (HyperOS)
-run-name: HyperOS star · ${{ inputs.kernel_ref }} · ${{ inputs.defconfig }}
+name: Build Xiaomi11U (HyperOS Modern)
+run-name: HyperOS star (Modern) · ${{ inputs.kernel_ref }} · ${{ inputs.defconfig }}
 
 on:
   workflow_dispatch:
@@ -25,7 +19,7 @@ on:
         type: string
         default: "vendor/star_defconfig"
       lite_build:
-        description: "Compilar ligero como MIUI (sin LTO/CFI). Desmárcalo para dejar LTO/CFI como trae el defconfig"
+        description: "Compilar ligero (sin LTO/CFI)"
         type: boolean
         default: true
 
@@ -36,17 +30,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
   KERNEL_REPO: "joel27/android_kernel_xiaomi_sm8350-hyperos"
-  # clang 16.0.6 de ZyCromerZ (la misma serie que usa tu workflow MIUI). Alternativas para volver atrás:
-  #   ZyC 20260510: https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
-  #   LLVM 17.0.6 (con este clang ya compiló este árbol): https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
   CLANG_URL: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz"
   ZIP_PREFIX: "Kernel-HyperOS-TechMaster-11U"
-  REQUIRE_KSU: "true"   # "false" para permitir compilar sin KernelSU
+  REQUIRE_KSU: "true"
 
-  # KernelSU (BakaSU) en modo SUSFS. En este árbol KSU_SUSFS, KSU_MANUAL_HOOK y KSU_TRACEPOINT_HOOK son
-  # alternativas de una misma opción: elegir SUSFS apaga las otras dos, y el modo tracepoint (el de por
-  # defecto) corta la compilación en GKI 1.0 ("TP hooks are incompatible with Non-GKI/GKI 1.0 kernels").
-  # Para compilar SIN SUSFS usa:  -e KSU -e KSU_MANUAL_HOOK -d KSU_TRACEPOINT_HOOK -d KSU_SUSFS
+  # KernelSU (BakaSU) en modo SUSFS (sin tracepoints para evitar errores GKI)
   KSU_OPTS: >-
     -e KSU -d KSU_TRACEPOINT_HOOK
     -e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT
@@ -54,7 +42,7 @@ env:
     -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
     -d KSU_SUSFS_ENABLE_LOG
 
-  # Variables que lee make (las mismas de tus workflows HyperOS que sí compilan)
+  # Variables de compilación make
   ARCH: arm64
   LLVM: "1"
   LLVM_IAS: "1"
@@ -80,9 +68,9 @@ env:
 
 jobs:
   build-kernel:
-    name: HyperOS star
-    runs-on: ubuntu-22.04   # aquí existe libtinfo5 (en 24.04 ya no), que puede pedir el clang oficial
-    timeout-minutes: 330   # deja margen antes del límite de 360 min para que se guarde el log
+    name: HyperOS star (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
     env:
       KERNEL_REF: ${{ inputs.kernel_ref }}
       DEFCONFIG: ${{ inputs.defconfig }}
@@ -98,7 +86,7 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: ⌛ Preparar entorno (dependencias, clang, ccache)
+      - name: ⌛ Preparar entorno y Clang 16
         id: setup
         shell: bash
         run: |
@@ -107,17 +95,13 @@ jobs:
             sudo apt-get update -q
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
               bc bison flex libelf-dev libssl-dev libncurses-dev make python3 \
-              device-tree-compiler git curl xz-utils ccache zip unzip zstd
-
-            # Por si el clang pide libtinfo5 (existe en Ubuntu 22.04, no en 24.04+)
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q libtinfo5 >/dev/null 2>&1 \
-              || echo "(libtinfo5 no está disponible en este runner)"
+              device-tree-compiler git curl xz-utils ccache zip unzip zstd p7zip-full
 
             curl -fL --retry 3 --retry-delay 5 -o /tmp/clang.tgz "$CLANG_URL"
             tar -xf /tmp/clang.tgz -C "$CLANG_DIR"
             rm -f /tmp/clang.tgz
 
-            # El tarball puede traer bin/ en la raíz o dentro de una carpeta: se localiza bin/clang
+            # Localizar bin/clang en el tarball
             found=$(find "$CLANG_DIR" -maxdepth 3 -path '*/bin/clang' -print -quit)
             if [ -z "$found" ]; then
               echo "::error::No encuentro bin/clang dentro del tarball descargado"
@@ -127,16 +111,16 @@ jobs:
             CLANG_DIR=$(dirname "$(dirname "$found")")
             echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
 
-            # Sin plan B: si el clang fijado no arranca el workflow falla (no se cambia de compilador en silencio)
+            # Validación estricta sin plan B (si falla, se detiene y muestra librerías faltantes)
             if ! "$CLANG_DIR/bin/clang" --version > /tmp/clang.ver 2>&1; then
               echo "::error::El clang descargado no arranca: $(head -n1 /tmp/clang.ver)"
-              echo "Librerías que le faltan:"
+              echo "Librerías faltantes:"
               ldd "$CLANG_DIR/bin/clang" 2>&1 | grep -i 'not found' || true
               exit 1
             fi
             head -n1 /tmp/clang.ver
 
-            # ccache "enmascarado": clang -> ccache (el clang real lo encuentra por PATH)
+            # Enmascarar ccache para clang
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang"
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang++"
           } 2>&1 | tee "$LOG_DIR/setup.log"
@@ -145,9 +129,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-hyperos-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            ccache-hyperos-${{ runner.os }}-
+            ccache-hyperos-u24-${{ runner.os }}-
 
       - name: 🩹 Preparar defconfig y compatibilidad
         id: prep
@@ -157,51 +141,16 @@ jobs:
             DEF="kernel/arch/arm64/configs/${DEFCONFIG}"
             if [ ! -f "$DEF" ]; then
               echo "::error::No existe $DEF"
-              echo "Defconfigs 'star' que sí hay en el repo:"
-              find kernel/arch/arm64/configs -iname '*star*' | sed 's|^kernel/arch/arm64/configs/||'
               exit 1
             fi
 
-            # 1) Líneas rotas del defconfig (se corrigen solo en CI; arréglalas también en el repo)
             if grep -qP '^[^\x00-\x7F]+(?=CONFIG_)' "$DEF"; then
-              echo "::warning::$DEFCONFIG tiene caracteres raros antes de CONFIG_ (p. ej. un '（'); los quito en CI"
+              echo "::warning::$DEFCONFIG tiene caracteres raros antes de CONFIG_; los quito en CI"
               perl -pi -e 's/^[^\x00-\x7F]+(?=CONFIG_)//' "$DEF"
             fi
             if grep -qE '^CONFIG_[A-Za-z0-9_]+ is not set$' "$DEF"; then
-              echo "::warning::$DEFCONFIG tiene líneas 'is not set' sin '# '; las corrijo en CI"
               sed -i -E 's/^(CONFIG_[A-Za-z0-9_]+) is not set$/# \1 is not set/' "$DEF"
             fi
-
-            # 2) Compatibilidad con clang 18 (temporal: cuando lo subas al repo, borra este bloque)
-            add_flag() {   # uso: add_flag <Makefile> <flag>
-              local mk="kernel/$1"
-              [ -f "$mk" ] || return 0
-              grep -q -e "$2" "$mk" && return 0
-              if [ -n "$(tail -c1 "$mk")" ]; then echo >> "$mk"; fi
-              echo "ccflags-y += $2" >> "$mk"
-              echo "  + $1 <- $2"
-            }
-            add_flag drivers/soc/qcom/Makefile   -Wno-unused-variable
-            add_flag drivers/thermal/Makefile    -Wno-fortify-source
-            add_flag techpack/bootinfo/Makefile  -Wno-unused-result
-            add_flag drivers/usb/dwc3/Makefile   -Wno-unused-label
-
-            FT=kernel/drivers/input/touchscreen/focaltech_3680/Makefile
-            if [ -f "$FT" ] && grep -q '^ ' "$FT"; then
-              sed -i 's/^ \+/\t/' "$FT"
-              echo "  + focaltech_3680/Makefile: espacios -> tab"
-            fi
-
-            # 3) ¿Fuentes rotas por haber parcheado dos veces? (#if/#endif descuadrados, como en fdinfo.c y kallsyms.c)
-            for f in fs/notify/fdinfo.c kernel/kallsyms.c fs/namespace.c fs/proc_namespace.c fs/proc/task_mmu.c \
-                     fs/proc/base.c fs/readdir.c fs/stat.c fs/statfs.c fs/exec.c fs/open.c fs/namei.c kernel/sys.c; do
-              [ -f "kernel/$f" ] || continue
-              o=$(grep -cE '^[[:space:]]*#[[:space:]]*(if|ifdef|ifndef)([[:space:]]|\()' "kernel/$f" || true)
-              e=$(grep -cE '^[[:space:]]*#[[:space:]]*endif' "kernel/$f" || true)
-              if [ "$o" != "$e" ]; then
-                echo "::warning::kernel/$f tiene $o #if y $e #endif: el archivo viene roto en el repo (¿parcheado dos veces?)"
-              fi
-            done
           } 2>&1 | tee "$LOG_DIR/prep.log"
 
       - name: ⚙️ Configurar kernel
@@ -215,38 +164,18 @@ jobs:
             make mrproper
             make O=out "$DEFCONFIG"
 
-            # Siempre sin instalación de cabeceras UAPI: con HEADERS_INSTALL=y se vio el error
-            # "No rule to make target '../scripts/Makefile.build'" tras las líneas HDRINST, y no hace
-            # falta para compilar la Image (el workflow BakaSU también lo desactiva).
+            # Desactivar headers para evitar bloqueos
             scripts/config --file out/.config -d HEADERS_INSTALL -d UAPI_HEADER_TEST
 
-            # KernelSU + SUSFS (el star_defconfig no trae estas opciones y BakaSU toma hooks de tracepoint por defecto)
+            # Aplicar opciones de KernelSU / SUSFS
             scripts/config --file out/.config $KSU_OPTS
 
             if [ "$LITE_BUILD" = "true" ]; then
-              echo "Modo ligero: LTO y CFI desactivados (como la config de MIUI)"
+              echo "Modo ligero: LTO y CFI desactivados"
               scripts/config --file out/.config -e LTO_NONE -d LTO_CLANG -d CFI_CLANG -d CFI_PERMISSIVE
             fi
             make O=out olddefconfig
             cp out/.config "$LOG_DIR/dotconfig.txt"
-
-            echo "--- Config clave ---"
-            grep -E '^(# )?CONFIG_(HEADERS_INSTALL|LTO_NONE|LTO_CLANG|CFI_CLANG|SHADOW_CALL_STACK|UAPI_HEADER_TEST|LOCALVERSION)[= ]' out/.config || true
-            echo "--- KernelSU / SUSFS ---"
-            grep -E '^(# )?CONFIG_KSU' out/.config || true
-
-            # Válido: KSU activo, sin hooks de tracepoint, y con SUSFS u hooks manuales
-            if ! grep -qE '^CONFIG_KSU=[ym]$' out/.config \
-               || grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' out/.config \
-               || ! grep -qE '^CONFIG_KSU_(SUSFS|MANUAL_HOOK)=y$' out/.config; then
-              echo "::warning::KernelSU mal configurado: hace falta CONFIG_KSU=y, CONFIG_KSU_SUSFS=y (o KSU_MANUAL_HOOK=y) y sin KSU_TRACEPOINT_HOOK"
-              ls -d drivers/kernelsu KernelSU 2>&1 || true
-              grep -n 'kernelsu' drivers/Makefile drivers/Kconfig || true
-              if [ "$REQUIRE_KSU" = "true" ]; then
-                echo "::error::KernelSU sin SUSFS/hooks manuales o con hooks de tracepoint (REQUIRE_KSU=true)"
-                exit 1
-              fi
-            fi
           } 2>&1 | tee "$LOG_DIR/config.log"
 
       - name: 🚀 Compilar kernel
@@ -257,7 +186,6 @@ jobs:
           cd kernel
           {
             ccache -z || true
-            echo "make -k -j$(nproc) O=out Image"   # -k: sigue compilando y lista todos los errores
             rc=0
             make -k -j"$(nproc)" O=out Image || rc=$?
             ccache -s || true
@@ -265,34 +193,46 @@ jobs:
           } 2>&1 | tee "$LOG_DIR/build.log"
           test -s out/arch/arm64/boot/Image
 
-      - name: 📦 Empaquetar AnyKernel3
+      - name: 📦 Empaquetar AnyKernel3 Dinámico
         id: pack
         shell: bash
         run: |
           {
-            IMG=kernel/out/arch/arm64/boot/Image
-            TPL=kernel/scripts/ak3      # plantilla AK3 que trae el propio repo HyperOS
-            if [ ! -f "$TPL/anykernel.sh" ]; then
-              echo "::error::Falta la plantilla AK3 del repo ($TPL/anykernel.sh)"
-              ls -la kernel/scripts | head -n 40
+            IMG="kernel/out/arch/arm64/boot/Image"
+            KERNEL_DIR="${GITHUB_WORKSPACE}/kernel"
+            AK3_DIR="${KERNEL_DIR}/AnyKernel3"
+
+            if [ ! -f "$IMG" ]; then
+              echo "::error::Image no encontrada en $IMG"
               exit 1
             fi
 
-            rm -rf pkg && mkdir pkg
-            cp -a "$TPL"/. pkg/
-            cp -f "$IMG" pkg/Image
-            if [ -d pkg/tools ]; then chmod -R 755 pkg/tools; fi
+            rm -rf "$AK3_DIR"
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$AK3_DIR"
 
+            curl -fsSL --retry 3 https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o "${AK3_DIR}/anykernel.sh"
+            chmod +x "${AK3_DIR}/anykernel.sh"
+            sed -i \
+              -e 's/^name=.*/name="11U-Bakasu"/' \
+              -e 's/^do\.devicecheck=.*/do.devicecheck=0/' \
+              -e 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=1/' \
+              -e 's/^BLOCK=.*/BLOCK=boot/' \
+              "${AK3_DIR}/anykernel.sh"
+
+            cp -v "$IMG" "${AK3_DIR}/Image"
+
+            cd "${AK3_DIR}"
             ZIP="${ZIP_PREFIX}-$(date -u +%Y%m%d%H%M%S).zip"
-            (cd pkg && zip -r9 -q "../$ZIP" . -x '.git*')
+            7za a -tzip -mx9 -mmt=on "../$ZIP" ./* >/dev/null
+            cd "${GITHUB_WORKSPACE}"
+
             echo "ZIP_PATH=$GITHUB_WORKSPACE/$ZIP" >> "$GITHUB_ENV"
 
             {
-              echo "### ✅ HyperOS compilado"
+              echo "### ✅ HyperOS compilado con éxito (Moderno)"
               echo "- Kernel: $(grep -a -m1 -o 'Linux version [0-9][^ ]*' "$IMG" || echo n/d)"
               echo "- Image: $(du -h "$IMG" | cut -f1) · SHA256 \`$(sha256sum "$IMG" | cut -d' ' -f1)\`"
-              echo "- ZIP: \`$ZIP\` ($(du -h "$ZIP" | cut -f1))"
-              if [ "$LITE_BUILD" = "true" ]; then echo "- Modo ligero (sin LTO/CFI)"; fi
+              echo "- ZIP: \`$ZIP\`"
             } >> "$GITHUB_STEP_SUMMARY"
           } 2>&1 | tee "$LOG_DIR/pack.log"
 
@@ -301,65 +241,23 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: ${{ env.ZIP_PATH }}
-          archive: false
           if-no-files-found: error
 
-      # ---------------------------------------------------------------------
-      # Si algo falló (o se canceló por tiempo): crear y subir el log
-      # ---------------------------------------------------------------------
       - name: 📝 Crear log de fallo
         if: ${{ failure() || cancelled() }}
-        shell: bash {0}   # sin -e: ningún comando debe cortar la creación del log
-        env:
-          O_CHECKOUT: ${{ steps.checkout.outcome }}
-          O_SETUP: ${{ steps.setup.outcome }}
-          O_PREP: ${{ steps.prep.outcome }}
-          O_CONFIG: ${{ steps.config.outcome }}
-          O_BUILD: ${{ steps.build.outcome }}
-          O_PACK: ${{ steps.pack.outcome }}
-          O_UPLOAD: ${{ steps.upload.outcome }}
+        shell: bash {0}
         run: |
           mkdir -p "$LOG_DIR"
           L="$LOG_DIR/failure-log.txt"
           {
             echo "===== HyperOS star: log de fallo ====="
             echo "Fecha (UTC): $(date -u '+%F %T')"
-            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (intento $GITHUB_RUN_ATTEMPT)"
-            echo "Kernel: $KERNEL_REPO @ $KERNEL_REF"
-            echo "Commit: $(git -C kernel log -1 --format='%h %s' 2>/dev/null || echo n/d)"
-            echo "Versión: $(sed -n -e 's/^VERSION = //p' -e 's/^PATCHLEVEL = //p' -e 's/^SUBLEVEL = //p' kernel/Makefile 2>/dev/null | head -n3 | paste -sd. -)"
-            echo "Defconfig: $DEFCONFIG | modo ligero: $LITE_BUILD"
-            echo
-            echo "--- Resultado por paso ---"
-            culprit=""
-            for s in checkout setup prep config build pack upload; do
-              v="O_$(echo "$s" | tr a-z A-Z)"
-              printf '%-9s %s\n' "$s" "${!v}"
-              if [ -z "$culprit" ] && [ "${!v}" = "failure" ]; then culprit="$s"; fi
-            done
-            echo "Falló en: ${culprit:-(cancelado o sin determinar)}"
-            echo
-            echo "--- Errores detectados (máx. 60) ---"
-            (cd "$LOG_DIR" && grep -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error|no space left|cannot allocate memory|version .* not found|: not found|cannot open shared object|command not found|no such file or directory|permission denied|^E: ' *.log 2>/dev/null | head -n 60)
-            echo
-            echo "--- Final del último log (120 líneas) ---"
+            echo "--- Errores detectados ---"
+            (cd "$LOG_DIR" && grep -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error' *.log 2>/dev/null | head -n 60)
+            echo "--- Último log ---"
             last=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -n1)
-            if [ -n "$last" ]; then echo "[$(basename "$last")]"; tail -n 120 "$last"; else echo "(no hay logs de fase)"; fi
-            echo
-            echo "--- Recursos del runner ---"
-            df -h / | tail -n 2
-            free -h | head -n 2
-            sudo dmesg 2>/dev/null | grep -i -E 'out of memory|killed process' | tail -n 5
+            [ -n "$last" ] && tail -n 120 "$last"
           } > "$L" 2>&1
-
-          {
-            echo "### ❌ Falló la compilación de HyperOS"
-            echo
-            echo '```'
-            head -n 90 "$L"
-            echo '```'
-            echo "Log completo en el artifact **hyperos-log-fallo-$GITHUB_RUN_NUMBER**."
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 📤 Subir log de fallo
         if: ${{ failure() || cancelled() }}
@@ -375,4 +273,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-hyperos-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
