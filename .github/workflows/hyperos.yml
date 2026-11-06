@@ -36,8 +36,10 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
   KERNEL_REPO: "joel27/android_kernel_xiaomi_sm8350-hyperos"
-  # clang 17.0.6: el mismo de tu workflow BakaSU, que sí compiló este árbol
-  CLANG_URL: "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
+  # clang 16.0.6 de ZyCromerZ (la misma serie que usa tu workflow MIUI). Alternativas para volver atrás:
+  #   ZyC 20260510: https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
+  #   LLVM 17.0.6 (con este clang ya compiló este árbol): https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+  CLANG_URL: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz"
   ZIP_PREFIX: "Kernel-HyperOS-TechMaster-11U"
   REQUIRE_KSU: "true"   # "false" para permitir compilar sin KernelSU
 
@@ -107,23 +109,32 @@ jobs:
               bc bison flex libelf-dev libssl-dev libncurses-dev make python3 \
               device-tree-compiler git curl xz-utils ccache zip unzip zstd
 
-            # El clang oficial puede pedir libtinfo5: existe en Ubuntu 22.04, no en 24.04+
+            # Por si el clang pide libtinfo5 (existe en Ubuntu 22.04, no en 24.04+)
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q libtinfo5 >/dev/null 2>&1 \
               || echo "(libtinfo5 no está disponible en este runner)"
 
-            curl -fL --retry 3 --retry-delay 5 -o /tmp/clang.tar.xz "$CLANG_URL"
-            tar -xf /tmp/clang.tar.xz -C "$CLANG_DIR" --strip-components=1
-            rm -f /tmp/clang.tar.xz
+            curl -fL --retry 3 --retry-delay 5 -o /tmp/clang.tgz "$CLANG_URL"
+            tar -xf /tmp/clang.tgz -C "$CLANG_DIR"
+            rm -f /tmp/clang.tgz
 
-            # Si ese clang no arranca (p. ej. runner 24.04 sin libtinfo5), se usa clang-18 de apt
-            if ! "$CLANG_DIR/bin/clang" --version >/dev/null 2>&1; then
-              echo "::warning::El clang descargado no arranca; uso clang-18 de apt. Le falta:"
-              ldd "$CLANG_DIR/bin/clang" 2>&1 | grep -i 'not found' || true
-              sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q clang-18 lld-18 llvm-18
-              CLANG_DIR=/usr/lib/llvm-18
-              echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
+            # El tarball puede traer bin/ en la raíz o dentro de una carpeta: se localiza bin/clang
+            found=$(find "$CLANG_DIR" -maxdepth 3 -path '*/bin/clang' -print -quit)
+            if [ -z "$found" ]; then
+              echo "::error::No encuentro bin/clang dentro del tarball descargado"
+              ls -la "$CLANG_DIR" | head -n 20
+              exit 1
             fi
-            "$CLANG_DIR/bin/clang" --version | head -n1
+            CLANG_DIR=$(dirname "$(dirname "$found")")
+            echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
+
+            # Sin plan B: si el clang fijado no arranca el workflow falla (no se cambia de compilador en silencio)
+            if ! "$CLANG_DIR/bin/clang" --version > /tmp/clang.ver 2>&1; then
+              echo "::error::El clang descargado no arranca: $(head -n1 /tmp/clang.ver)"
+              echo "Librerías que le faltan:"
+              ldd "$CLANG_DIR/bin/clang" 2>&1 | grep -i 'not found' || true
+              exit 1
+            fi
+            head -n1 /tmp/clang.ver
 
             # ccache "enmascarado": clang -> ccache (el clang real lo encuentra por PATH)
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang"
