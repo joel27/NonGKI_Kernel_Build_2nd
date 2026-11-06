@@ -223,10 +223,10 @@ jobs:
 
             cd "${AK3_DIR}"
             ZIP="${ZIP_PREFIX}-$(date -u +%Y%m%d%H%M%S).zip"
-            7za a -tzip -mx9 -mmt=on "../$ZIP" ./* >/dev/null
+            7za a -tzip -mx9 -mmt=on "${GITHUB_WORKSPACE}/$ZIP" ./* >/dev/null
             cd "${GITHUB_WORKSPACE}"
 
-            echo "ZIP_PATH=$GITHUB_WORKSPACE/$ZIP" >> "$GITHUB_ENV"
+            echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
 
             {
               echo "### ✅ HyperOS compilado con éxito (Moderno)"
@@ -238,9 +238,10 @@ jobs:
 
       - name: ✏️ Subir zip a Actions
         id: upload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          path: ${{ env.ZIP_PATH }}
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ github.workspace }}/*.zip
           if-no-files-found: error
 
       - name: 📝 Crear log de fallo
