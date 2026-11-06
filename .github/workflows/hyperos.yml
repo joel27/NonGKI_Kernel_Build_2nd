@@ -116,6 +116,18 @@ jobs:
           cd "$GITHUB_WORKSPACE/device_kernel"
           echo "KBUILD_BUILD_TIMESTAMP=Fri Nov 14 08:26:51 UTC 2025" >> $GITHUB_ENV
 
+      - name: 🛠️ Verify & Pre-patch SuSFS Source Hooks
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          echo "Verificando integridad de kallsyms y fdinfo..."
+          if [ -f "kernel/kallsyms.c" ]; then
+            echo "✅ kernel/kallsyms.c detectado correctamente."
+          fi
+          if [ -f "fs/notify/fdinfo.c" ]; then
+            echo "✅ fs/notify/fdinfo.c detectado correctamente."
+          fi
+
       - name: 🚫 Patch NoMount
         uses: ./.github/workflows/patch-nomount
 
@@ -175,7 +187,7 @@ jobs:
 
           FINAL_ZIP="Kernel-HyperOS-TechMaster-11U-${TIME}.zip"
           cp -fp "${TMP_DIR}/package.zip" "${FINAL_ZIP}"
-          echo "PACK_NAME=${FINAL_ZIP}" >> "$GITHUB_ENV"
+          echo "PACK_NAME=${FINAL_ZIP}" >> $GITHUB_ENV
           echo "✅ Zip generado: ${FINAL_ZIP}"
           rm -rf "${TMP_DIR}"
 
