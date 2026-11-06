@@ -60,7 +60,7 @@ env:
   PATCHES_BRANCH: "mi_kernel"
 
   SUSFS_FOLDER_FIXED: "mi11_evox_a16"
-  SUSFS_PATCH_FIXED: "susfs_fixed"
+  SUSFS_PATCH_FIXED: "sysfs_fixed"
 
   REKERNEL_ENABLE: "false"
   DROIDSPACES_ENABLE: "false"
@@ -105,26 +105,28 @@ jobs:
       - name: ⚙️ Get necessary tools
         uses: ./.github/workflows/build-ready
 
-      # --- SOLUCIÓN ROBUSTA LD.LLD: Buscar solo en el workspace o /opt ---
-      - name: 🛠️ Export Clang to PATH
+      # --- SOLUCIÓN ROBUSTA LD.LLD: Búsqueda segura de binario ejecutable ---
+      - name: 🛠️ Export Clang to PATH safely
         shell: bash
         run: |
-          echo "Buscando el binario real de ld.lld en el workspace..."
-          CLANG_BIN=$(find "$GITHUB_WORKSPACE" -name "ld.lld" -type f 2>/dev/null | head -n 1 | xargs dirname || true)
-          if [ -n "$CLANG_BIN" ] && [ -d "$CLANG_BIN" ]; then
-            echo "✅ Clang bin encontrado en workspace: $CLANG_BIN"
+          echo "Buscando el binario ejecutable de ld.lld..."
+          LD_LFD_PATH=""
+          for path in $(find / -name "ld.lld" -type f 2>/dev/null); do
+            # Evitamos rutas de pruebas del sistema operativo y verificamos permisos de ejecución
+            if [ -x "$path" ] && [[ "$path" != *"/usr/lib/llvm-"* ]] && [[ "$path" != *"/usr/share"* ]]; then
+              LD_LFD_PATH="$path"
+              break
+            fi
+          done
+
+          if [ -n "$LD_LFD_PATH" ]; then
+            CLANG_BIN=$(dirname "$LD_LFD_PATH")
+            echo "✅ Clang bin ejecutable encontrado en: $CLANG_BIN"
             echo "$CLANG_BIN" >> $GITHUB_PATH
             export PATH="$PATH:$CLANG_BIN"
           else
-            CLANG_BIN=$(find /opt /usr/local -name "ld.lld" -type f 2>/dev/null | head -n 1 | xargs dirname || true)
-            if [ -n "$CLANG_BIN" ] && [ -d "$CLANG_BIN" ]; then
-              echo "✅ Clang bin encontrado en sistema: $CLANG_BIN"
-              echo "$CLANG_BIN" >> $GITHUB_PATH
-              export PATH="$PATH:$CLANG_BIN"
-            else
-              echo "❌ Error crítico: No se pudo localizar ld.lld válido."
-              exit 1
-            fi
+            echo "❌ Error crítico: No se pudo localizar un ld.lld ejecutable válido en el sistema."
+            exit 1
           fi
           ld.lld --version
 
