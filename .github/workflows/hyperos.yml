@@ -105,28 +105,27 @@ jobs:
       - name: ⚙️ Get necessary tools
         uses: ./.github/workflows/build-ready
 
-      # --- SOLUCIÓN ERROR LD.LLD: Exportar Clang bin al PATH global de Actions ---
+      # --- SOLUCIÓN ROBUSTA LD.LLD: Buscar solo en el workspace o /opt ---
       - name: 🛠️ Export Clang to PATH
         shell: bash
         run: |
-          echo "Buscando la ruta de ld.lld para añadirla al PATH..."
-          CLANG_BIN=$(find / -name "ld.lld" -type f 2>/dev/null | head -n 1 | xargs dirname || true)
+          echo "Buscando el binario real de ld.lld en el workspace..."
+          CLANG_BIN=$(find "$GITHUB_WORKSPACE" -name "ld.lld" -type f 2>/dev/null | head -n 1 | xargs dirname || true)
           if [ -n "$CLANG_BIN" ] && [ -d "$CLANG_BIN" ]; then
-            echo "✅ Clang bin encontrado en: $CLANG_BIN"
+            echo "✅ Clang bin encontrado en workspace: $CLANG_BIN"
             echo "$CLANG_BIN" >> $GITHUB_PATH
+            export PATH="$PATH:$CLANG_BIN"
           else
-            echo "⚠️ Buscando en rutas alternativas del workspace..."
-            ALT_PATH=$(find "$GITHUB_WORKSPACE" -name "ld.lld" -type f 2>/dev/null | head -n 1 | xargs dirname || true)
-            if [ -n "$ALT_PATH" ]; then
-              echo "✅ Clang bin alternativo encontrado en: $ALT_PATH"
-              echo "$ALT_PATH" >> $GITHUB_PATH
+            CLANG_BIN=$(find /opt /usr/local -name "ld.lld" -type f 2>/dev/null | head -n 1 | xargs dirname || true)
+            if [ -n "$CLANG_BIN" ] && [ -d "$CLANG_BIN" ]; then
+              echo "✅ Clang bin encontrado en sistema: $CLANG_BIN"
+              echo "$CLANG_BIN" >> $GITHUB_PATH
+              export PATH="$PATH:$CLANG_BIN"
             else
-              echo "❌ Error critico: No se pudo localizar ld.lld en el sistema."
+              echo "❌ Error crítico: No se pudo localizar ld.lld válido."
               exit 1
             fi
           fi
-          # Verificación rápida
-          export PATH="$PATH:$CLANG_BIN"
           ld.lld --version
 
       - name: 🪝 Patch Kernel of SUSFS
