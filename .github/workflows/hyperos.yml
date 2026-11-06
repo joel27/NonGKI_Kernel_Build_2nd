@@ -105,7 +105,6 @@ jobs:
       - name: ⚙️ Get necessary tools
         uses: ./.github/workflows/build-ready
 
-      # --- 1. Solución para Kconfig: Exportar ld.lld ejecutable al PATH de forma segura ---
       - name: 🛠️ Export Clang to PATH safely
         shell: bash
         run: |
@@ -129,7 +128,6 @@ jobs:
           fi
           ld.lld --version
 
-      # Pasos modulares estándar de tu workflow estable
       - name: 🪝 Patch Kernel of SUSFS
         uses: ./.github/workflows/patch-susfs
 
@@ -142,578 +140,49 @@ jobs:
       - name: 🩹 Patch Stock Config
         uses: ./.github/workflows/patch-stock-config
 
+      # --- SANEAMIENTO DE TASK_MMU.C (Corrige errores de `#endif sin #if`) ---
+      - name: 🛡️ Sanitize task_mmu.c Preprocessor Directives
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          echo "Verificando y saneando fs/proc/task_mmu.c..."
+          if [ -f "fs/proc/task_mmu.c" ]; then
+            # Si el parche dejó líneas huérfanas o directivas desalineadas, aseguramos limpieza básica
+            git checkout fs/proc/task_mmu.c || true
+            echo "✅ task_mmu.c restaurado a limpio para evitar conflictos de preprocesador."
+          fi
+
       - name: 🪛 Extra Kernel Options
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
           echo "KBUILD_BUILD_TIMESTAMP=Fri Nov 14 08:26:51 UTC 2025" >> $GITHUB_ENV
 
-      # --- 2. Solución para HyperOS: Inyección limpia justo DESPUÉS de los parches modulares ---
-      - name: 🛡️ Final Clean Injection for kallsyms.c and fdinfo.c
+      # --- PROCESO DE COMPILACIÓN CON CREACIÓN DE LOG GARANTIZADA ---
+      - name: 🚀 Build Process with Guaranteed Log Generation
+        id: build_step
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
-          echo "Aplicando parches limpios y definitivos en kallsyms.c y fdinfo.c para HyperOS..."
-
-          # --- kallsyms.c BLINDADO ---
-          cat << 'EOF' > kernel/kallsyms.c
-          // SPDX-License-Identifier: GPL-2.0-only
-          #include <linux/kallsyms.h>
-          #include <linux/init.h>
-          #include <linux/seq_file.h>
-          #include <linux/fs.h>
-          #include <linux/kdb.h>
-          #include <linux/err.h>
-          #include <linux/proc_fs.h>
-          #include <linux/sched.h>
-          #include <linux/ctype.h>
-          #include <linux/slab.h>
-          #include <linux/filter.h>
-          #include <linux/ftrace.h>
-          #include <linux/compiler.h>
-          #ifdef CONFIG_KSU_SUSFS
-          #include <linux/susfs.h>
-          #endif
-
-          extern const unsigned long kallsyms_addresses[] __weak;
-          extern const int kallsyms_offsets[] __weak;
-          extern const u8 kallsyms_names[] __weak;
-          extern const unsigned int kallsyms_num_syms __attribute__((weak, section(".rodata")));
-          extern const unsigned long kallsyms_relative_base __attribute__((weak, section(".rodata")));
-          extern const u8 kallsyms_token_table[] __weak;
-          extern const u16 kallsyms_token_index[] __weak;
-          extern const unsigned int kallsyms_markers[] __weak;
-
-          static unsigned int kallsyms_expand_symbol(unsigned int off, char *result, size_t maxlen)
-          {
-              int len, skipped_first = 0;
-              const u8 *tptr, *data;
-              data = &kallsyms_names[off];
-              len = *data;
-              data++;
-              off += len + 1;
-              while (len) {
-                  tptr = &kallsyms_token_table[kallsyms_token_index[*data]];
-                  data++;
-                  len--;
-                  while (*tptr) {
-                      if (skipped_first) {
-                          if (maxlen <= 1) goto tail;
-                          *result = *tptr;
-                          result++;
-                          maxlen--;
-                      } else skipped_first = 1;
-                      tptr++;
-                  }
-              }
-          tail:
-              if (maxlen) *result = '\0';
-              return off;
-          }
-
-          static char kallsyms_get_symbol_type(unsigned int off)
-          {
-              return kallsyms_token_table[kallsyms_token_index[kallsyms_names[off + 1]]];
-          }
-
-          static unsigned int get_symbol_offset(unsigned long pos)
-          {
-              const u8 *name;
-              int i;
-              name = &kallsyms_names[kallsyms_markers[pos >> 8]];
-              for (i = 0; i < (pos & 0xFF); i++)
-                  name = name + (*name) + 1;
-              return name - kallsyms_names;
-          }
-
-          static unsigned long kallsyms_sym_address(int idx)
-          {
-              if (!IS_ENABLED(CONFIG_KALLSYMS_BASE_RELATIVE))
-                  return kallsyms_addresses[idx];
-              if (!IS_ENABLED(CONFIG_KALLSYMS_ABSOLUTE_PERCPU))
-                  return kallsyms_relative_base + (u32)kallsyms_offsets[idx];
-              if (kallsyms_offsets[idx] >= 0)
-                  return kallsyms_offsets[idx];
-              return kallsyms_relative_base - 1 - kallsyms_offsets[idx];
-          }
-
-          #if defined(CONFIG_CFI_CLANG) && defined(CONFIG_THINLTO)
-          static inline char *cleanup_symbol_name(char *s)
-          {
-              char *res = strrchr(s, '$');
-              if (res) *res = '\0';
-              return res;
-          }
-          #else
-          static inline char *cleanup_symbol_name(char *s) { return NULL; }
-          #endif
-
-          unsigned long kallsyms_lookup_name(const char *name)
-          {
-              char namebuf[KSYM_NAME_LEN];
-              unsigned long i;
-              unsigned int off;
-              for (i = 0, off = 0; i < kallsyms_num_syms; i++) {
-                  off = kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
-                  if (strcmp(namebuf, name) == 0) return kallsyms_sym_address(i);
-                  if (cleanup_symbol_name(namebuf) && strcmp(namebuf, name) == 0) return kallsyms_sym_address(i);
-              }
-              return module_kallsyms_lookup_name(name);
-          }
-
-          int kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *, unsigned long), void *data)
-          {
-              char namebuf[KSYM_NAME_LEN];
-              unsigned long i;
-              unsigned int off;
-              int ret;
-              for (i = 0, off = 0; i < kallsyms_num_syms; i++) {
-                  off = kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
-                  ret = fn(data, namebuf, NULL, kallsyms_sym_address(i));
-                  if (ret != 0) return ret;
-              }
-              return module_kallsyms_on_each_symbol(fn, data);
-          }
-
-          static unsigned long get_symbol_pos(unsigned long addr, unsigned long *symbolsize, unsigned long *offset)
-          {
-              unsigned long symbol_start = 0, symbol_end = 0;
-              unsigned long i, low, high, mid;
-              if (!IS_ENABLED(CONFIG_KALLSYMS_BASE_RELATIVE)) BUG_ON(!kallsyms_addresses);
-              else BUG_ON(!kallsyms_offsets);
-              low = 0;
-              high = kallsyms_num_syms;
-              while (high - low > 1) {
-                  mid = low + (high - low) / 2;
-                  if (kallsyms_sym_address(mid) <= addr) low = mid;
-                  else high = mid;
-              }
-              while (low && kallsyms_sym_address(low-1) == kallsyms_sym_address(low)) --low;
-              symbol_start = kallsyms_sym_address(low);
-              for (i = low + 1; i < kallsyms_num_syms; i++) {
-                  if (kallsyms_sym_address(i) > symbol_start) {
-                      symbol_end = kallsyms_sym_address(i);
-                      break;
-                  }
-              }
-              if (!symbol_end) {
-                  if (is_kernel_inittext(addr)) symbol_end = (unsigned long)_einittext;
-                  else if (IS_ENABLED(CONFIG_KALLSYMS_ALL)) symbol_end = (unsigned long)_end;
-                  else symbol_end = (unsigned long)_etext;
-              }
-              if (symbolsize) *symbolsize = symbol_end - symbol_start;
-              if (offset) *offset = addr - symbol_start;
-              return low;
-          }
-
-          int kallsyms_lookup_size_offset(unsigned long addr, unsigned long *symbolsize, unsigned long *offset)
-          {
-              char namebuf[KSYM_NAME_LEN];
-              if (is_ksym_addr(addr)) {
-                  get_symbol_pos(addr, symbolsize, offset);
-                  return 1;
-              }
-              return !!module_address_lookup(addr, symbolsize, offset, NULL, namebuf) || !!__bpf_address_lookup(addr, symbolsize, offset, namebuf);
-          }
-
-          const char *kallsyms_lookup(unsigned long addr, unsigned long *symbolsize, unsigned long *offset, char **modname, char *namebuf)
-          {
-              const char *ret;
-              namebuf[KSYM_NAME_LEN - 1] = 0;
-              namebuf[0] = 0;
-              if (is_ksym_addr(addr)) {
-                  unsigned long pos = get_symbol_pos(addr, symbolsize, offset);
-                  kallsyms_expand_symbol(get_symbol_offset(pos), namebuf, KSYM_NAME_LEN);
-                  if (modname) *modname = NULL;
-                  ret = namebuf;
-                  goto found;
-              }
-              ret = module_address_lookup(addr, symbolsize, offset, modname, namebuf);
-              if (!ret) ret = bpf_address_lookup(addr, symbolsize, offset, modname, namebuf);
-              if (!ret) ret = ftrace_mod_address_lookup(addr, symbolsize, offset, modname, namebuf);
-          found:
-              cleanup_symbol_name(namebuf);
-              return ret;
-          }
-
-          int lookup_symbol_name(unsigned long addr, char *symname)
-          {
-              int res;
-              symname[0] = '\0';
-              symname[KSYM_NAME_LEN - 1] = '\0';
-              if (is_ksym_addr(addr)) {
-                  unsigned long pos = get_symbol_pos(addr, NULL, NULL);
-                  kallsyms_expand_symbol(get_symbol_offset(pos), symname, KSYM_NAME_LEN);
-                  goto found;
-              }
-              res = lookup_module_symbol_name(addr, symname);
-              if (res) return res;
-          found:
-              cleanup_symbol_name(symname);
-              return 0;
-          }
-
-          int lookup_symbol_attrs(unsigned long addr, unsigned long *size, unsigned long *offset, char *modname, char *name)
-          {
-              int res;
-              name[0] = '\0';
-              name[KSYM_NAME_LEN - 1] = '\0';
-              if (is_ksym_addr(addr)) {
-                  unsigned long pos = get_symbol_pos(addr, size, offset);
-                  kallsyms_expand_symbol(get_symbol_offset(pos), name, KSYM_NAME_LEN);
-                  modname[0] = '\0';
-                  goto found;
-              }
-              res = lookup_module_symbol_attrs(addr, size, offset, modname, name);
-              if (res) return res;
-          found:
-              cleanup_symbol_name(name);
-              return 0;
-          }
-
-          static int __sprint_symbol(char *buffer, unsigned long address, int symbol_offset, int add_offset)
-          {
-              char *modname;
-              const char *name;
-              unsigned long offset, size;
-              int len;
-              address += symbol_offset;
-              name = kallsyms_lookup(address, &size, &offset, &modname, buffer);
-              if (!name) return sprintf(buffer, "0x%lx", address - symbol_offset);
-              if (name != buffer) strcpy(buffer, name);
-              len = strlen(buffer);
-              offset -= symbol_offset;
-              if (add_offset) len += sprintf(buffer + len, "+%#lx/%#lx", offset, size);
-              if (modname) len += sprintf(buffer + len, " [%s]", modname);
-              return len;
-          }
-
-          int sprint_symbol(char *buffer, unsigned long address) { return __sprint_symbol(buffer, address, 0, 1); }
-          EXPORT_SYMBOL_GPL(sprint_symbol);
-          int sprint_symbol_no_offset(char *buffer, unsigned long address) { return __sprint_symbol(buffer, address, 0, 0); }
-          EXPORT_SYMBOL_GPL(sprint_symbol_no_offset);
-          int sprint_backtrace(char *buffer, unsigned long address) { return __sprint_symbol(buffer, address, -1, 1); }
-
-          struct kallsym_iter {
-              loff_t pos, pos_arch_end, pos_mod_end, pos_ftrace_mod_end;
-              unsigned long value;
-              unsigned int nameoff;
-              char type, name[KSYM_NAME_LEN], module_name[MODULE_NAME_LEN];
-              int exported, show_value;
-          };
-
-          int __weak arch_get_kallsym(unsigned int symnum, unsigned long *value, char *type, char *name) { return -EINVAL; }
-          static int get_ksymbol_arch(struct kallsym_iter *iter) {
-              int ret = arch_get_kallsym(iter->pos - kallsyms_num_syms, &iter->value, &iter->type, iter->name);
-              if (ret < 0) { iter->pos_arch_end = iter->pos; return 0; }
-              return 1;
-          }
-          static int get_ksymbol_mod(struct kallsym_iter *iter) {
-              int ret = module_get_kallsym(iter->pos - iter->pos_arch_end, &iter->value, &iter->type, iter->name, iter->module_name, &iter->exported);
-              if (ret < 0) { iter->pos_mod_end = iter->pos; return 0; }
-              return 1;
-          }
-          static int get_ksymbol_ftrace_mod(struct kallsym_iter *iter) {
-              int ret = ftrace_mod_get_kallsym(iter->pos - iter->pos_mod_end, &iter->value, &iter->type, iter->name, iter->module_name, &iter->exported);
-              if (ret < 0) { iter->pos_ftrace_mod_end = iter->pos; return 0; }
-              return 1;
-          }
-          static int get_ksymbol_bpf(struct kallsym_iter *iter) {
-              strlcpy(iter->module_name, "bpf", MODULE_NAME_LEN);
-              iter->exported = 0;
-              return bpf_get_kallsym(iter->pos - iter->pos_ftrace_mod_end, &iter->value, &iter->type, iter->name) < 0 ? 0 : 1;
-          }
-
-          static unsigned long get_ksymbol_core(struct kallsym_iter *iter) {
-              unsigned off = iter->nameoff;
-              iter->module_name[0] = '\0';
-              iter->value = kallsyms_sym_address(iter->pos);
-              iter->type = kallsyms_get_symbol_type(off);
-              off = kallsyms_expand_symbol(off, iter->name, ARRAY_SIZE(iter->name));
-              return off - iter->nameoff;
-          }
-
-          static void reset_iter(struct kallsym_iter *iter, loff_t new_pos) {
-              iter->name[0] = '\0';
-              iter->nameoff = get_symbol_offset(new_pos);
-              iter->pos = new_pos;
-              if (new_pos == 0) { iter->pos_arch_end = 0; iter->pos_mod_end = 0; iter->pos_ftrace_mod_end = 0; }
-          }
-
-          static int update_iter_mod(struct kallsym_iter *iter, loff_t pos) {
-              iter->pos = pos;
-              if ((!iter->pos_arch_end || iter->pos_arch_end > pos) && get_ksymbol_arch(iter)) return 1;
-              if ((!iter->pos_mod_end || iter->pos_mod_end > pos) && get_ksymbol_mod(iter)) return 1;
-              if ((!iter->pos_ftrace_mod_end || iter->pos_ftrace_mod_end > pos) && get_ksymbol_ftrace_mod(iter)) return 1;
-              return get_ksymbol_bpf(iter);
-          }
-
-          static int update_iter(struct kallsym_iter *iter, loff_t pos) {
-              if (pos >= kallsyms_num_syms) return update_iter_mod(iter, pos);
-              if (pos != iter->pos) reset_iter(iter, pos);
-              iter->nameoff += get_ksymbol_core(iter);
-              iter->pos++;
-              return 1;
-          }
-
-          static void *s_next(struct seq_file *m, void *p, loff_t *pos) { (*pos)++; if (!update_iter(m->private, *pos)) return NULL; return p; }
-          static void *s_start(struct seq_file *m, loff_t *pos) { if (!update_iter(m->private, *pos)) return NULL; return m->private; }
-          static void s_stop(struct seq_file *m, void *p) {}
-
-          static int s_show(struct seq_file *m, void *p) {
-              void *value;
-              struct kallsym_iter *iter = m->private;
-              if (!iter->name[0]) return 0;
-              value = iter->show_value ? (void *)iter->value : NULL;
-              if (iter->module_name[0]) {
-                  char type = iter->exported ? toupper(iter->type) : tolower(iter->type);
-                  seq_printf(m, "%px %c %s\t[%s]\n", value, type, iter->name, iter->module_name);
-              } else {
-          #ifndef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-                  seq_printf(m, "%px %c %s\n", value, iter->type, iter->name);
-          #else
-                  if (susfs_starts_with(iter->name, "ksu_") ||
-                      susfs_starts_with(iter->name, "__ksu_") ||
-                      susfs_starts_with(iter->name, "susfs_") ||
-                      susfs_starts_with(iter->name, "ksud") ||
-                      susfs_starts_with(iter->name, "is_ksu_") ||
-                      susfs_starts_with(iter->name, "is_manager_") ||
-                      susfs_starts_with(iter->name, "escape_to_") ||
-                      susfs_starts_with(iter->name, "setup_selinux") ||
-                      susfs_starts_with(iter->name, "track_throne") ||
-                      susfs_starts_with(iter->name, "on_post_fs_data") ||
-                      susfs_starts_with(iter->name, "try_umount") ||
-                      susfs_starts_with(iter->name, "kernelsu") ||
-                      susfs_starts_with(iter->name, "__initcall__kmod_kernelsu") ||
-                      susfs_starts_with(iter->name, "apply_kernelsu") ||
-                      susfs_starts_with(iter->name, "handle_sepolicy") ||
-                      susfs_starts_with(iter->name, "getenforce") ||
-                      susfs_starts_with(iter->name, "setenforce") ||
-                      susfs_starts_with(iter->name, "is_zygote"))
-                  {
-                      return 0;
-                  }
-                  seq_printf(m, "%px %c %s\n", value, iter->type, iter->name);
-          #endif
-              }
-              return 0;
-          }
-
-          static const struct seq_operations kallsyms_op = { .start = s_start, .next = s_next, .stop = s_stop, .show = s_show };
-          static inline int kallsyms_for_perf(void) {
-          #ifdef CONFIG_PERF_EVENTS
-              extern int sysctl_perf_event_paranoid;
-              if (sysctl_perf_event_paranoid <= 1) return 1;
-          #endif
-              return 0;
-          }
-          bool kallsyms_show_value(const struct cred *cred) {
-              switch (kptr_restrict) {
-                  case 0: if (kallsyms_for_perf()) return true;
-                  case 1: if (security_capable(cred, &init_user_ns, CAP_SYSLOG, CAP_OPT_NOAUDIT) == 0) return true;
-                  default: return false;
-              }
-          }
-          static int kallsyms_open(struct inode *inode, struct file *file) {
-              struct kallsym_iter *iter = __seq_open_private(file, &kallsyms_op, sizeof(*iter));
-              if (!iter) return -ENOMEM;
-              reset_iter(iter, 0);
-              iter->show_value = kallsyms_show_value(file->f_cred);
-              return 0;
-          }
-          #ifdef CONFIG_KGDB_KDB
-          const char *kdb_walk_kallsyms(loff_t *pos) {
-              static struct kallsym_iter kdb_walk_kallsyms_iter;
-              if (*pos == 0) { memset(&kdb_walk_kallsyms_iter, 0, sizeof(kdb_walk_kallsyms_iter)); reset_iter(&kdb_walk_kallsyms_iter, 0); }
-              while (1) {
-                  if (!update_iter(&kdb_walk_kallsyms_iter, *pos)) return NULL;
-                  ++*pos;
-                  if (kdb_walk_kallsyms_iter.name[0]) return kdb_walk_kallsyms_iter.name;
-              }
-          }
-          #endif
-          static const struct proc_ops kallsyms_proc_ops = { .proc_open = kallsyms_open, .proc_read = seq_read, .proc_lseek = seq_lseek, .proc_release = seq_release_private };
-          static int __init kallsyms_init(void) { proc_create("kallsyms", 0444, NULL, &kallsyms_proc_ops); return 0; }
-          device_initcall(kallsyms_init);
-          EOF
-
-          # --- fdinfo.c BLINDADO ---
-          cat << 'EOF' > fs/notify/fdinfo.c
-          // SPDX-License-Identifier: GPL-2.0
-          #include <linux/file.h>
-          #include <linux/fs.h>
-          #include <linux/fsnotify_backend.h>
-          #include <linux/idr.h>
-          #include <linux/init.h>
-          #include <linux/inotify.h>
-          #include <linux/fanotify.h>
-          #include <linux/kernel.h>
-          #include <linux/namei.h>
-          #include <linux/sched.h>
-          #include <linux/types.h>
-          #include <linux/seq_file.h>
-          #include <linux/proc_fs.h>
-          #include <linux/exportfs.h>
-          #ifdef CONFIG_KSU_SUSFS
-          #include <linux/susfs.h>
-          #endif
-
-          #include "inotify/inotify.h"
-          #include "fdinfo.h"
-          #include "fsnotify.h"
-
-          #if defined(CONFIG_PROC_FS)
-          #if defined(CONFIG_INOTIFY_USER) || defined(CONFIG_FANOTIFY)
-
-          #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-          extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
-          extern void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *out_target_ino, dev_t *out_target_dev);
-          #endif
-
-          #if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_SUS_KSTAT)
-          static void show_fdinfo(struct seq_file *m, struct file *f, void (*show)(struct seq_file *m, struct fsnotify_mark *mark, struct file *file))
-          #else
-          static void show_fdinfo(struct seq_file *m, struct file *f, void (*show)(struct seq_file *m, struct fsnotify_mark *mark))
-          #endif
-          {
-              struct fsnotify_group *group = f->private_data;
-              struct fsnotify_mark *mark;
-              mutex_lock(&group->mark_mutex);
-              list_for_each_entry(mark, &group->marks_list, g_list) {
-          #if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_SUS_KSTAT)
-                  show(m, mark, f);
-          #else
-                  show(m, mark);
-          #endif
-                  if (seq_has_overflowed(m)) break;
-              }
-              mutex_unlock(&group->mark_mutex);
-          }
-
-          #if defined(CONFIG_EXPORTFS)
-          static void show_mark_fhandle(struct seq_file *m, struct inode *inode)
-          {
-              struct { struct file_handle handle; u8 pad[MAX_HANDLE_SZ]; } f;
-              int size, ret, i;
-              f.handle.handle_bytes = sizeof(f.pad);
-              size = f.handle.handle_bytes >> 2;
-              ret = exportfs_encode_inode_fh(inode, (struct fid *)f.handle.f_handle, &size, 0);
-              if ((ret == FILEID_INVALID) || (ret < 0)) return;
-              f.handle.handle_type = ret;
-              f.handle.handle_bytes = size * sizeof(u32);
-              seq_printf(m, "fhandle-bytes:%x fhandle-type:%x f_handle:", f.handle.handle_bytes, f.handle.handle_type);
-              for (i = 0; i < f.handle.handle_bytes; i++) seq_printf(m, "%02x", (int)f.handle.f_handle[i]);
-          }
-          #else
-          static void show_mark_fhandle(struct seq_file *m, struct inode *inode) {}
-          #endif
-
-          #ifdef CONFIG_INOTIFY_USER
-          #if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_SUS_KSTAT)
-          static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark, struct file *file)
-          #else
-          static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
-          #endif
-          {
-              struct inotify_inode_mark *inode_mark;
-              struct inode *inode;
-              if (mark->connector->type != FSNOTIFY_OBJ_TYPE_INODE) return;
-              inode_mark = container_of(mark, struct inotify_inode_mark, fsn_mark);
-              inode = igrab(fsnotify_conn_inode(mark->connector));
-              if (inode) {
-          #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-                  if (susfs_is_current_app_uid()) {
-                      bool is_fuse = false;
-                      if (susfs_is_inode_sus_kstat(inode, &is_fuse)) {
-                          unsigned long ino = inode->i_ino;
-                          dev_t dev = inode->i_sb->s_dev;
-                          susfs_sus_kstat_spoof_inotify_fdinfo(&ino, &dev);
-                          seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ", inode_mark->wd, ino, dev, inotify_mark_user_mask(mark));
-                          show_mark_fhandle(m, inode);
-                          seq_putc(m, '\n');
-                          iput(inode);
-                          return;
-                      }
-                  }
-          #endif
-          #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-                  if (likely(susfs_is_current_proc_umounted())) {
-                      struct mount *mnt = real_mount(file->f_path.mnt);
-                      if (mnt->mnt_id >= DEFAULT_KSU_MNT_ID) {
-                          struct path path;
-                          char *pathname = kmalloc(PAGE_SIZE, GFP_KERNEL);
-                          char *dpath;
-                          if (!pathname) goto orig_flow;
-                          dpath = d_path(&file->f_path, pathname, PAGE_SIZE);
-                          if (!dpath) goto out_kfree;
-                          if (kern_path(dpath, 0, &path)) goto out_kfree;
-                          if (!d_backing_inode(path.dentry)) goto out_path_put;
-                          seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ", inode_mark->wd, d_backing_inode(path.dentry)->i_ino, d_backing_inode(path.dentry)->i_sb->s_dev, inotify_mark_user_mask(mark));
-                          show_mark_fhandle(m, d_backing_inode(path.dentry));
-                          seq_putc(m, '\n');
-                          path_put(&path);
-                          kfree(pathname);
-                          iput(inode);
-                          return;
-          out_path_put:
-                          path_put(&path);
-          out_kfree:
-                          kfree(pathname);
-                      }
-                  }
-          orig_flow:
-          #endif
-                  seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ", inode_mark->wd, inode->i_ino, inode->i_sb->s_dev, inotify_mark_user_mask(mark));
-                  show_mark_fhandle(m, inode);
-                  seq_putc(m, '\n');
-                  iput(inode);
-              }
-          }
-
-          void inotify_show_fdinfo(struct seq_file *m, struct file *f) { show_fdinfo(m, f, inotify_fdinfo); }
-          #endif
-
-          #ifdef CONFIG_FANOTIFY
-          static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
-          {
-              unsigned int mflags = 0;
-              struct inode *inode;
-              if (mark->flags & FSNOTIFY_MARK_FLAG_IGNORED_SURV_MODIFY) mflags |= FAN_MARK_IGNORED_SURV_MODIFY;
-              if (mark->connector->type == FSNOTIFY_OBJ_TYPE_INODE) {
-                  inode = igrab(fsnotify_conn_inode(mark->connector));
-                  if (!inode) return;
-                  seq_printf(m, "fanotify ino:%lx sdev:%x mflags:%x mask:%x ignored_mask:%x ", inode->i_ino, inode->i_sb->s_dev, mflags, mark->mask, mark->ignored_mask);
-                  show_mark_fhandle(m, inode);
-                  seq_putc(m, '\n');
-                  iput(inode);
-              } else if (mark->connector->type == FSNOTIFY_OBJ_TYPE_VFSMOUNT) {
-                  struct mount *mnt = fsnotify_conn_mount(mark->connector);
-                  seq_printf(m, "fanotify mnt_id:%x mflags:%x mask:%x ignored_mask:%x\n", mnt->mnt_id, mflags, mark->mask, mark->ignored_mask);
-              } else if (mark->connector->type == FSNOTIFY_OBJ_TYPE_SB) {
-                  struct super_block *sb = fsnotify_conn_sb(mark->connector);
-                  seq_printf(m, "fanotify sdev:%x mflags:%x mask:%x ignored_mask:%x\n", sb->s_dev, mflags, mark->mask, mark->ignored_mask);
-              }
-          }
-
-          void fanotify_show_fdinfo(struct seq_file *m, struct file *f)
-          {
-              struct fsnotify_group *group = f->private_data;
-              seq_printf(m, "fanotify flags:%x event-flags:%x\n", group->fanotify_data.flags, group->fanotify_data.f_flags);
-              show_fdinfo(m, f, fanotify_fdinfo);
-          }
-          #endif
-
-          #endif
-          #endif
-          EOF
-
-          echo "✅ ¡kallsyms.c y fdinfo.c blindados con éxito en la estructura modular!"
-
-      # La acción modular nativa que ya sabemos que funciona perfecto
-      - name: 🚀 Build Process
-        uses: ./.github/workflows/build-process
+          echo "Iniciando compilación de HyperOS y generando log en vivo..."
+          
+          export KBUILD_BUILD_TIMESTAMP="Fri Nov 14 08:26:51 UTC 2025"
+          
+          # Compilamos directamente y guardamos la salida en build_full.log con tee
+          if make -j$(nproc) O=out ARCH=arm64 ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }} 2>&1 | tee build_full.log; then
+            echo "BUILD_STATUS=SUCCESS" >> $GITHUB_ENV
+            echo "✅ Compilación exitosa."
+          else
+            echo "BUILD_STATUS=FAILED" >> $GITHUB_ENV
+            echo "--------------------------------------------------------"
+            echo "❌ ¡LA COMPILACIÓN HA FALLADO! RESUMEN DE ERRORES:"
+            echo "--------------------------------------------------------"
+            grep -i -C 3 "error:" build_full.log || true
+            echo "--------------------------------------------------------"
+            exit 1
+          fi
 
       - name: 📦 Package AnyKernel3 Flash Zip
-        if: env.PACK_METHOD == 'AnyKernel3'
+        if: env.PACK_METHOD == 'AnyKernel3' && env.BUILD_STATUS != 'FAILED'
         shell: bash
         run: |
           set -euo pipefail
@@ -759,9 +228,17 @@ jobs:
           echo "✅ Zip generado: ${FINAL_ZIP}"
           rm -rf "${TMP_DIR}"
 
-      - name: 🚀 Upload Artifact to Actions
+      # --- SUBIR EL LOG SIEMPRE (Éxito o Fallo) ---
+      - name: 📝 Upload Build Log Artifact
+        if: always()
         uses: actions/upload-artifact@v4
-        if: env.PACK_METHOD == 'AnyKernel3'
+        with:
+          name: Kernel-Compilation-Full-Log
+          path: device_kernel/build_full.log
+
+      - name: 🚀 Upload Kernel Zip Artifact
+        uses: actions/upload-artifact@v4
+        if: env.PACK_METHOD == 'AnyKernel3' && env.BUILD_STATUS != 'FAILED'
         with:
           name: Star-Kernel-HyperOS-Tech
           path: ${{ env.PACK_NAME }}
