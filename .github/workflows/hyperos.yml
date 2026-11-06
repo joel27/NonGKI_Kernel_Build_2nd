@@ -163,12 +163,17 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
-          echo "Iniciando compilación de HyperOS y generando log en vivo..."
+          echo "Iniciando configuración del kernel..."
           
           export KBUILD_BUILD_TIMESTAMP="Fri Nov 14 08:26:51 UTC 2025"
           
-          # Compilamos directamente y guardamos la salida en build_full.log con tee
-          if make -j$(nproc) O=out ARCH=arm64 ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }} 2>&1 | tee build_full.log; then
+          # Paso 1: Generar la configuración (defconfig)
+          make O=out ARCH=arm64 ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }}
+          
+          echo "Configuración escrita. Iniciando compilación masiva..."
+          
+          # Paso 2: Compilar el kernel y guardar todo el flujo en el log
+          if make -j$(nproc) O=out ARCH=arm64 ${{ env.EXTRA_CMDS }} 2>&1 | tee build_full.log; then
             echo "BUILD_STATUS=SUCCESS" >> $GITHUB_ENV
             echo "✅ Compilación exitosa."
           else
@@ -180,7 +185,6 @@ jobs:
             echo "--------------------------------------------------------"
             exit 1
           fi
-
       - name: 📦 Package AnyKernel3 Flash Zip
         if: env.PACK_METHOD == 'AnyKernel3' && env.BUILD_STATUS != 'FAILED'
         shell: bash
