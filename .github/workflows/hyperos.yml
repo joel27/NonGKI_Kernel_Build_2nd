@@ -111,18 +111,25 @@ jobs:
       - name: 🔗 Patch for no-kprobe
         uses: ./.github/workflows/patch-no-kprobe
 
+      - name: 🚫 Patch NoMount
+        uses: ./.github/workflows/patch-nomount
+
+      - name: 🩹 Patch Stock Config
+        uses: ./.github/workflows/patch-stock-config
+
       - name: 🪛 Extra Kernel Options
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
           echo "KBUILD_BUILD_TIMESTAMP=Fri Nov 14 08:26:51 UTC 2025" >> $GITHUB_ENV
 
-      - name: 🛡️ Inject Clean SuSFS Hooks for HyperOS
+      # --- PASO CRÍTICO: Inyección al FINALIZAR todos los parches automáticos ---
+      - name: 🛡️ Final Clean Injection for kallsyms.c and fdinfo.c
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
-          echo "Aplicando parches limpios y blindados para kallsyms.c y fdinfo.c..."
+          echo "Aplicando parches limpios y definitivos en kallsyms.c y fdinfo.c..."
 
-          # --- 1. BLINDAR kernel/kallsyms.c ---
+          # --- 1. kallsyms.c BLINDADO ---
           cat << 'EOF' > kernel/kallsyms.c
           // SPDX-License-Identifier: GPL-2.0-only
           #include <linux/kallsyms.h>
@@ -504,7 +511,7 @@ jobs:
           device_initcall(kallsyms_init);
           EOF
 
-          # --- 2. BLINDAR fs/notify/fdinfo.c ---
+          # --- 2. fdinfo.c BLINDADO ---
           cat << 'EOF' > fs/notify/fdinfo.c
           // SPDX-License-Identifier: GPL-2.0
           #include <linux/file.h>
@@ -674,19 +681,33 @@ jobs:
           #endif
           EOF
 
-          echo "✅ ¡Archivos kallsyms.c y fdinfo.c blindados exitosamente!"
+          echo "✅ ¡Archivos kallsyms.c y fdinfo.c inyectados y blindados con éxito!"
 
-      - name: 🚫 Patch NoMount
-        uses: ./.github/workflows/patch-nomount
-
-      - name: 🩹 Patch Stock Config
-        uses: ./.github/workflows/patch-stock-config
-
-      - name: 🚀 Build Process
-        uses: ./.github/workflows/build-process
+      - name: 🚀 Build Process with Error Capture & Log Generation
+        id: build_step
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          echo "Iniciando compilación y registro de logs..."
+          
+          export KBUILD_BUILD_TIMESTAMP="Fri Nov 14 08:26:51 UTC 2025"
+          
+          # Compilamos y guardamos todo el flujo en build_full.log
+          if make -j$(nproc) O=out ARCH=arm64 ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }} 2>&1 | tee build_full.log; then
+            echo "BUILD_STATUS=SUCCESS" >> $GITHUB_ENV
+            echo "✅ Compilación exitosa."
+          else
+            echo "BUILD_STATUS=FAILED" >> $GITHUB_ENV
+            echo "--------------------------------------------------------"
+            echo "❌ ¡LA COMPILACIÓN HA FALLADO! ERRORES DETECTADOS:"
+            echo "--------------------------------------------------------"
+            grep -i -C 3 "error:" build_full.log || true
+            echo "--------------------------------------------------------"
+            exit 1
+          fi
 
       - name: 📦 Package AnyKernel3 Flash Zip
-        if: env.PACK_METHOD == 'AnyKernel3'
+        if: env.PACK_METHOD == 'AnyKernel3' && env.BUILD_STATUS != 'FAILED'
         shell: bash
         run: |
           set -euo pipefail
@@ -695,7 +716,7 @@ jobs:
           TMP_DIR="${KERNEL_DIR}/tmp"
           IMG_PATH="${KERNEL_DIR}/out/arch/arm64/boot/Image"
           cd "${KERNEL_DIR}"
-          if [[ ! -f "${IMG_PATH}" ]]; then
+          if [[ ! -f "${IMG_PATH}}" ]]; then
             echo "::error::❌ Build failed, Image not found"
             exit 1
           fi
@@ -721,13 +742,6 @@ jobs:
           fi
 
           cp -v "${IMG_PATH}" "${TMP_DIR}/Image"
-          if [[ "${{ env.PACK_KMODULES }}" == "true" ]]; then
-            MOD_DIR="${TMP_DIR}/modules/vendor/lib/modules"
-            mkdir -p "${MOD_DIR}"
-            find . -name "*.ko" -type f -print0 | xargs -0 cp -t "${MOD_DIR}/" 2>/dev/null || true
-            module_count=$(find "${MOD_DIR}" -name "*.ko" | wc -l)
-            [[ ${module_count} -eq 0 ]] && rm -rf "${TMP_DIR}/modules"
-          fi
           [[ -d "${AK3_DIR}" ]] && cp -rp "${AK3_DIR}"/* "${TMP_DIR}/"
           cd "${TMP_DIR}"
           7za a -tzip -mx9 -mmt=on package.zip ./* >/dev/null
@@ -739,9 +753,17 @@ jobs:
           echo "✅ Zip generado: ${FINAL_ZIP}"
           rm -rf "${TMP_DIR}"
 
-      - name: 🚀 Upload Artifact to Actions
-        uses: actions/upload-artifact@v7
-        if: env.PACK_METHOD == 'AnyKernel3'
+      # --- GARANTIZAR LOGS SIEMPRE (Éxito o Fallo) ---
+      - name: 📝 Upload Build Log Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Compilation-Full-Log
+          path: device_kernel/build_full.log
+
+      - name: 🚀 Upload Kernel Zip Artifact
+        uses: actions/upload-artifact@v4
+        if: env.PACK_METHOD == 'AnyKernel3' && env.BUILD_STATUS != 'FAILED'
         with:
           name: Star-Kernel-HyperOS-Tech
           path: ${{ env.PACK_NAME }}
