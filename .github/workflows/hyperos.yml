@@ -1,215 +1,155 @@
-# =============================================================================
-# Kernel HyperOS — Moderno y Modular (Xiaomi Mi 11 Ultra / star)
-# - Runner: Ubuntu 24.04
-# - Clang: ZyCromerZ 16.0.6 (20260807) sin respaldos a apt
-# - AnyKernel3: Dinámico (osm0sis) con script personalizado
-# =============================================================================
-name: Build Xiaomi11U (HyperOS Modern)
-run-name: HyperOS star (Modern) · ${{ inputs.kernel_ref }} · ${{ inputs.defconfig }}
+name: Xiaomi 11U — HyperOS Modern
 
 on:
+  workflow_call:
   workflow_dispatch:
-    inputs:
-      kernel_ref:
-        description: "Rama o tag del repo HyperOS"
-        type: string
-        default: "dynamic"
-      defconfig:
-        description: "Defconfig (ruta dentro de arch/arm64/configs)"
-        type: string
-        default: "vendor/star_defconfig"
-      lite_build:
-        description: "Compilar ligero (sin LTO/CFI)"
-        type: boolean
-        default: true
-
-permissions:
-  contents: read
 
 env:
+  # Device env
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  DEVICE_NAME: "xiaomi_11U"
+  DEVICE_CODENAME: "star"
 
-  KERNEL_REPO: "joel27/android_kernel_xiaomi_sm8350-hyperos"
-  CLANG_URL: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz"
-  ZIP_PREFIX: "Kernel-HyperOS-TechMaster-11U"
-  REQUIRE_KSU: "true"
+  CUSTOM_CMDS: "CLANG_TRIPLE=aarch64-linux-gnu-"
+  EXTRA_CMDS: 'LD=ld.lld LLVM=1 LLVM_IAS=1 EXTRA_CFLAGS="-Wno-unused-function -Wno-frame-larger-than"'
 
-  # KernelSU (BakaSU) en modo SUSFS (sin tracepoints para evitar errores GKI)
-  KSU_OPTS: >-
-    -e KSU -d KSU_TRACEPOINT_HOOK
-    -e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT
-    -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP
-    -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-    -d KSU_SUSFS_ENABLE_LOG
+  KERNEL_SOURCE: "https://github.com/joel27/android_kernel_xiaomi_sm8350-hyperos.git"
+  KERNEL_BRANCH: "dynamic"
 
-  # Variables de compilación make
-  ARCH: arm64
-  LLVM: "1"
-  LLVM_IAS: "1"
-  CLANG_TRIPLE: aarch64-linux-gnu-
-  CROSS_COMPILE: aarch64-linux-gnu-
-  CROSS_COMPILE_ARM32: arm-linux-gnueabi-
-  KCFLAGS: >-
-    -Wno-error -Wno-frame-larger-than -Wno-strict-prototypes -Wno-align-mismatch
-    -Wno-unused-function -Wno-unused-variable -Wno-unused-result -Wno-unused-label
-    -Wno-compare-distinct-pointer-types -Wno-void-pointer-to-int-cast -Wno-array-parameter
-    -Wno-declaration-after-statement -Wno-sometimes-uninitialized -Wno-misleading-indentation
-    -Wno-fortify-source -Wno-macro-redefined
+  CLANG_SOURCE: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz"
+  CLANG_BRANCH: ""
 
-  # Rutas y ccache
-  CLANG_DIR: ${{ github.workspace }}/clang
-  CCACHE_BIN: ${{ github.workspace }}/ccache-bin
-  LOG_DIR: ${{ github.workspace }}/logs
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: "3G"
-  CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-  CCACHE_NOHASHDIR: "true"
-  CCACHE_HARDLINK: "true"
+  GCC_GNU: false
+  GCC_64_SOURCE: "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9.git"
+  GCC_64_BRANCH: "android12L-release"
+  GCC_32_SOURCE: "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9.git"
+  GCC_32_BRANCH: "android12L-release"
+
+  DEFCONFIG_SOURCE: ""
+  DEFCONFIG_NAME: "vendor/star_defconfig"
+  DEFCONFIG_ORIGIN_IMAGE: ""
+  DEFCONFIG_FROM_BOOT: false
+
+  KERNELSU_SOURCE: ""
+  KERNELSU_BRANCH: ""
+
+  KERNELSU_AUTO_GET: "true"
+  KERNELSU_AUTO_FORK: "bakasu"
+
+  SUSFS_ENABLE: true
+  SUSFS_FIXED: true
+
+  NOMOUNT_ENABLE: "true"
+
+  AK3_SOURCE: "https://github.com/osm0sis/AnyKernel3.git"
+  AK3_BRANCH: "master"
+
+  BOOT_SOURCE: ""
+  NEED_DTBO: false
+  NEED_SAFE_DTBO: false
+  ROM_TEXT: "Kernel-HyperOS-TechMaster"
+
+  PYTHON_VERSION: "3"
+  PACK_METHOD: "AnyKernel3"
+  PACK_KMODULES: "false"
+
+  KERNELSU_METHOD: "shell"
+  KERNELSU_SUS_PATCH: "false"
+
+  PATCHES_SOURCE: "joel27/NonGKI_Kernel_Patches"
+  PATCHES_BRANCH: "mi_kernel"
+
+  SUSFS_FOLDER_FIXED: "mi11_evox_a16"
+  SUSFS_PATCH_FIXED: "susfs_fixed"
+
+  REKERNEL_ENABLE: "false"
+  DROIDSPACES_ENABLE: "false"
+  HOOK_METHOD: "syscall"
+  KERNEL_PATCH: "false"
+
+  KPM_ENABLE: "false"
+  KPM_INLINE: "false"
+  KPM_KPATCH_NEXT: "false"
+  KPM_PATCH_SOURCE: "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/refs/heads/main/kpm/patch_linux"
+
+  BASEBAND_GUARD_ENABLE: "false"
+  BASEBAND_GUARD_BOOT: "false"
+
+  GENERATE_DTB: "false"
+  GENERATE_CHIP: "qcom"
+
+  BUILD_DEBUGGER: "false"
+  SKIP_PATCH: "false"
+  
+  BUILD_OTHER_CONFIG: "true"
+  MERGE_CONFIG_FILES: "vendor/star_QGKI.config,vendor/xiaomi_QGKI.config"
+  
+  FREE_MORE_SPACE: "false"
 
 jobs:
   build-kernel:
-    name: HyperOS star (Ubuntu 24.04)
+    name: Xiaomi11U (HyperOS Modern)
     runs-on: ubuntu-24.04
-    timeout-minutes: 330
     env:
-      KERNEL_REF: ${{ inputs.kernel_ref }}
-      DEFCONFIG: ${{ inputs.defconfig }}
-      LITE_BUILD: ${{ inputs.lite_build }}
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
 
     steps:
-      - name: 📥 Descargar kernel HyperOS
-        id: checkout
+      - name: ⏰ Checkout repository
         uses: actions/checkout@v6
-        with:
-          repository: ${{ env.KERNEL_REPO }}
-          ref: ${{ inputs.kernel_ref }}
-          path: kernel
-          fetch-depth: 1
 
-      - name: ⌛ Preparar entorno y Clang 16
-        id: setup
+      - name: ⌛️ Compilation environment preparation
+        uses: ./.github/workflows/build-env
+
+      - name: ⚙️ Get necessary tools
+        uses: ./.github/workflows/build-ready
+
+      - name: 🪝 Patch Kernel of SUSFS
+        uses: ./.github/workflows/patch-susfs
+
+      - name: 🔗 Patch for no-kprobe
+        uses: ./.github/workflows/patch-no-kprobe
+
+      - name: 🪛 Extra Kernel Options
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          echo "KBUILD_BUILD_TIMESTAMP=Fri Nov 14 08:26:51 UTC 2025" >> $GITHUB_ENV
+
+      - name: 🚫 Patch NoMount
+        uses: ./.github/workflows/patch-nomount
+
+      - name: 🩹 Patch Stock Config
+        uses: ./.github/workflows/patch-stock-config
+
+      - name: 🚀 Build Process
+        uses: ./.github/workflows/build-process
+
+      - name: 📦 Package AnyKernel3 Flash Zip
+        if: env.PACK_METHOD == 'AnyKernel3'
         shell: bash
         run: |
-          mkdir -p "$LOG_DIR" "$CLANG_DIR" "$CCACHE_BIN"
-          {
-            sudo apt-get update -q
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
-              bc bison flex libelf-dev libssl-dev libncurses-dev make python3 \
-              device-tree-compiler git curl xz-utils ccache zip unzip zstd p7zip-full
+          set -euo pipefail
+          TIME=$(date +"%Y%m%d%H%M%S")
+          KERNEL_DIR="${GITHUB_WORKSPACE}/device_kernel"
+          TMP_DIR="${KERNEL_DIR}/tmp"
+          IMG_PATH="${KERNEL_DIR}/out/arch/arm64/boot/Image"
+          cd "${KERNEL_DIR}"
+          if [[ ! -f "${IMG_PATH}" ]]; then
+            echo "::error::❌ Build failed, Image not found"
+            exit 1
+          fi
+          IMG_SIZE=$(du -h "${IMG_PATH}" | awk '{print $1}')
+          echo "✅ Kernel image detected | Size: ${IMG_SIZE}"
+          rm -rf "${TMP_DIR}"
+          mkdir -p "${TMP_DIR}"
 
-            curl -fL --retry 3 --retry-delay 5 -o /tmp/clang.tgz "$CLANG_URL"
-            tar -xf /tmp/clang.tgz -C "$CLANG_DIR"
-            rm -f /tmp/clang.tgz
-
-            # Localizar bin/clang en el tarball
-            found=$(find "$CLANG_DIR" -maxdepth 3 -path '*/bin/clang' -print -quit)
-            if [ -z "$found" ]; then
-              echo "::error::No encuentro bin/clang dentro del tarball descargado"
-              ls -la "$CLANG_DIR" | head -n 20
-              exit 1
-            fi
-            CLANG_DIR=$(dirname "$(dirname "$found")")
-            echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
-
-            # Validación estricta sin plan B (si falla, se detiene y muestra librerías faltantes)
-            if ! "$CLANG_DIR/bin/clang" --version > /tmp/clang.ver 2>&1; then
-              echo "::error::El clang descargado no arranca: $(head -n1 /tmp/clang.ver)"
-              echo "Librerías faltantes:"
-              ldd "$CLANG_DIR/bin/clang" 2>&1 | grep -i 'not found' || true
-              exit 1
-            fi
-            head -n1 /tmp/clang.ver
-
-            # Enmascarar ccache para clang
-            ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang"
-            ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang++"
-          } 2>&1 | tee "$LOG_DIR/setup.log"
-
-      - name: ♻️ Restaurar caché de ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            ccache-hyperos-u24-${{ runner.os }}-
-
-      - name: 🩹 Preparar defconfig y compatibilidad
-        id: prep
-        shell: bash
-        run: |
-          {
-            DEF="kernel/arch/arm64/configs/${DEFCONFIG}"
-            if [ ! -f "$DEF" ]; then
-              echo "::error::No existe $DEF"
-              exit 1
-            fi
-
-            if grep -qP '^[^\x00-\x7F]+(?=CONFIG_)' "$DEF"; then
-              echo "::warning::$DEFCONFIG tiene caracteres raros antes de CONFIG_; los quito en CI"
-              perl -pi -e 's/^[^\x00-\x7F]+(?=CONFIG_)//' "$DEF"
-            fi
-            if grep -qE '^CONFIG_[A-Za-z0-9_]+ is not set$' "$DEF"; then
-              sed -i -E 's/^(CONFIG_[A-Za-z0-9_]+) is not set$/# \1 is not set/' "$DEF"
-            fi
-          } 2>&1 | tee "$LOG_DIR/prep.log"
-
-      - name: ⚙️ Configurar kernel
-        id: config
-        shell: bash
-        run: |
-          export PATH="$CCACHE_BIN:$CLANG_DIR/bin:$PATH"
-          cd kernel
-          {
-            echo "clang: $(command -v clang) | $(clang --version | head -n1)"
-            make mrproper
-            make O=out "$DEFCONFIG"
-
-            # Desactivar headers para evitar bloqueos
-            scripts/config --file out/.config -d HEADERS_INSTALL -d UAPI_HEADER_TEST
-
-            # Aplicar opciones de KernelSU / SUSFS
-            scripts/config --file out/.config $KSU_OPTS
-
-            if [ "$LITE_BUILD" = "true" ]; then
-              echo "Modo ligero: LTO y CFI desactivados"
-              scripts/config --file out/.config -e LTO_NONE -d LTO_CLANG -d CFI_CLANG -d CFI_PERMISSIVE
-            fi
-            make O=out olddefconfig
-            cp out/.config "$LOG_DIR/dotconfig.txt"
-          } 2>&1 | tee "$LOG_DIR/config.log"
-
-      - name: 🚀 Compilar kernel
-        id: build
-        shell: bash
-        run: |
-          export PATH="$CCACHE_BIN:$CLANG_DIR/bin:$PATH"
-          cd kernel
-          {
-            ccache -z || true
-            rc=0
-            make -k -j"$(nproc)" O=out Image || rc=$?
-            ccache -s || true
-            exit "$rc"
-          } 2>&1 | tee "$LOG_DIR/build.log"
-          test -s out/arch/arm64/boot/Image
-
-      - name: 📦 Empaquetar AnyKernel3 Dinámico
-        id: pack
-        shell: bash
-        run: |
-          {
-            IMG="kernel/out/arch/arm64/boot/Image"
-            KERNEL_DIR="${GITHUB_WORKSPACE}/kernel"
-            AK3_DIR="${KERNEL_DIR}/AnyKernel3"
-
-            if [ ! -f "$IMG" ]; then
-              echo "::error::Image no encontrada en $IMG"
-              exit 1
-            fi
-
-            rm -rf "$AK3_DIR"
-            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$AK3_DIR"
-
+          AK3_DIR="${KERNEL_DIR}/AnyKernel3"
+          if [[ ! -d "${AK3_DIR}" ]]; then
+            echo "::error::❌ AnyKernel3 not found in ${AK3_DIR}"
+            exit 1
+          fi
+          if [[ -d "${AK3_DIR}" ]]; then
             curl -fsSL --retry 3 https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o "${AK3_DIR}/anykernel.sh"
             chmod +x "${AK3_DIR}/anykernel.sh"
             sed -i \
@@ -218,60 +158,31 @@ jobs:
               -e 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=1/' \
               -e 's/^BLOCK=.*/BLOCK=boot/' \
               "${AK3_DIR}/anykernel.sh"
+          fi
 
-            cp -v "$IMG" "${AK3_DIR}/Image"
+          cp -v "${IMG_PATH}" "${TMP_DIR}/Image"
+          if [[ "${{ env.PACK_KMODULES }}" == "true" ]]; then
+            MOD_DIR="${TMP_DIR}/modules/vendor/lib/modules"
+            mkdir -p "${MOD_DIR}"
+            find . -name "*.ko" -type f -print0 | xargs -0 cp -t "${MOD_DIR}/" 2>/dev/null || true
+            module_count=$(find "${MOD_DIR}" -name "*.ko" | wc -l)
+            [[ ${module_count} -eq 0 ]] && rm -rf "${TMP_DIR}/modules"
+          fi
+          [[ -d "${AK3_DIR}" ]] && cp -rp "${AK3_DIR}"/* "${TMP_DIR}/"
+          cd "${TMP_DIR}"
+          7za a -tzip -mx9 -mmt=on package.zip ./* >/dev/null
+          cd "${GITHUB_WORKSPACE}"
 
-            cd "${AK3_DIR}"
-            ZIP="${ZIP_PREFIX}-$(date -u +%Y%m%d%H%M%S).zip"
-            7za a -tzip -mx9 -mmt=on "${GITHUB_WORKSPACE}/$ZIP" ./* >/dev/null
-            cd "${GITHUB_WORKSPACE}"
+          FINAL_ZIP="Kernel-HyperOS-TechMaster-11U-${TIME}.zip"
+          cp -fp "${TMP_DIR}/package.zip" "${FINAL_ZIP}"
+          echo "PACK_NAME=${FINAL_ZIP}" >> "$GITHUB_ENV"
+          echo "✅ Zip generado: ${FINAL_ZIP}"
+          rm -rf "${TMP_DIR}"
 
-            echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
-
-            {
-              echo "### ✅ HyperOS compilado con éxito (Moderno)"
-              echo "- Kernel: $(grep -a -m1 -o 'Linux version [0-9][^ ]*' "$IMG" || echo n/d)"
-              echo "- Image: $(du -h "$IMG" | cut -f1) · SHA256 \`$(sha256sum "$IMG" | cut -d' ' -f1)\`"
-              echo "- ZIP: \`$ZIP\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-          } 2>&1 | tee "$LOG_DIR/pack.log"
-
-      - name: ✏️ Subir zip a Actions
-        id: upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ github.workspace }}/*.zip
-          if-no-files-found: error
-
-      - name: 📝 Crear log de fallo
-        if: ${{ failure() || cancelled() }}
-        shell: bash {0}
-        run: |
-          mkdir -p "$LOG_DIR"
-          L="$LOG_DIR/failure-log.txt"
-          {
-            echo "===== HyperOS star: log de fallo ====="
-            echo "Fecha (UTC): $(date -u '+%F %T')"
-            echo "--- Errores detectados ---"
-            (cd "$LOG_DIR" && grep -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error' *.log 2>/dev/null | head -n 60)
-            echo "--- Último log ---"
-            last=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -n1)
-            [ -n "$last" ] && tail -n 120 "$last"
-          } > "$L" 2>&1
-
-      - name: 📤 Subir log de fallo
-        if: ${{ failure() || cancelled() }}
+      - name: 🚀 Upload Artifact to Actions
         uses: actions/upload-artifact@v7
+        if: env.PACK_METHOD == 'AnyKernel3'
         with:
-          name: hyperos-log-fallo-${{ github.run_number }}
-          path: ${{ env.LOG_DIR }}
-          retention-days: 14
-          if-no-files-found: warn
-
-      - name: 💾 Guardar caché de ccache
-        if: ${{ always() }}
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: Star-Kernel-HyperOS-Tech
+          path: ${{ env.PACK_NAME }}
+          compression-level: 0
