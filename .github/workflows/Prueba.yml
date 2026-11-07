@@ -60,7 +60,7 @@ env:
   PATCHES_BRANCH: "mi_kernel"
 
   SUSFS_FOLDER_FIXED: "mi11_evox_a16"
-  SUSFS_PATCH_FIXED: "sysfs_fixed"
+  SUSFS_PATCH_FIXED: "susfs_fixed"
 
   REKERNEL_ENABLE: "false"
   DROIDSPACES_ENABLE: "false"
