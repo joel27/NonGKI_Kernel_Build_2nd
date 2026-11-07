@@ -84,6 +84,7 @@ jobs:
           repository: "${{ env.KERNEL_REPO }}"
           ref: "${{ inputs.kernel_ref }}"
           path: "kernel"
+          submodules: recursive
           fetch-depth: 1
 
       - name: ⌛ Preparar entorno y Clang 16
