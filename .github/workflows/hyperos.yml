@@ -1,9 +1,3 @@
-# =============================================================================
-# Kernel HyperOS — Moderno y Modular (Xiaomi Mi 11 Ultra / star)
-# - Runner: Ubuntu 24.04
-# - Clang: ZyCromerZ 16.0.6 (20260807) sin respaldos a apt
-# - AnyKernel3: Dinámico (osm0sis) con script personalizado
-# =============================================================================
 name: Build Xiaomi11U (HyperOS Modern)
 run-name: HyperOS star (Modern) · ${{ inputs.kernel_ref }} · ${{ inputs.defconfig }}
 
@@ -34,31 +28,39 @@ env:
   ZIP_PREFIX: "Kernel-HyperOS-TechMaster-11U"
   REQUIRE_KSU: "true"
 
-  # KernelSU (BakaSU) en modo SUSFS (sin tracepoints para evitar errores GKI)
+  # KernelSU (BakaSU) en modo SUSFS
   KSU_OPTS: >-
     -e KSU -d KSU_TRACEPOINT_HOOK
     -e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT
     -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP
     -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
     -d KSU_SUSFS_ENABLE_LOG
-  # Variables de compilación make
+
+  # Variables de compilación make con herramientas LLVM explícitas para evitar Error 127
   ARCH: arm64
   LLVM: "1"
   LLVM_IAS: "1"
+  LD: ld.lld
+  AR: llvm-ar
+  NM: llvm-nm
+  OBJCOPY: llvm-objcopy
+  OBJDUMP: llvm-objdump
+  STRIP: llvm-strip
   CLANG_TRIPLE: aarch64-linux-gnu-
   CROSS_COMPILE: aarch64-linux-gnu-
   CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+  
   KCFLAGS: >-
     -Wno-error -Wno-frame-larger-than -Wno-strict-prototypes -Wno-align-mismatch
     -Wno-unused-function -Wno-unused-variable -Wno-unused-result -Wno-unused-label
     -Wno-compare-distinct-pointer-types -Wno-void-pointer-to-int-cast -Wno-array-parameter
     -Wno-declaration-after-statement -Wno-sometimes-uninitialized -Wno-misleading-indentation
     -Wno-fortify-source -Wno-macro-redefined
-  # Rutas y ccache
+
   CLANG_DIR: ${{ github.workspace }}/clang
   CCACHE_BIN: ${{ github.workspace }}/ccache-bin
   LOG_DIR: ${{ github.workspace }}/logs
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_DIR: ${{ github.workspace }/.ccache
   CCACHE_MAXSIZE: "3G"
   CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
   CCACHE_NOHASHDIR: "true"
@@ -83,7 +85,6 @@ jobs:
           ref: ${{ inputs.kernel_ref }}
           path: kernel
           fetch-depth: 1
-          submodules: recursive  # <--- CORRECCIÓN: ESTA LÍNEA SE ENCARGA DE LLAMAR A KERNELSU
 
       - name: ⌛ Preparar entorno y Clang 16
         id: setup
@@ -98,7 +99,6 @@ jobs:
             curl -fL --retry 3 --retry-delay 5 -o /tmp/clang.tgz "$CLANG_URL"
             tar -xf /tmp/clang.tgz -C "$CLANG_DIR"
             rm -f /tmp/clang.tgz
-            # Localizar bin/clang en el tarball
             found=$(find "$CLANG_DIR" -maxdepth 3 -path '*/bin/clang' -print -quit)
             if [ -z "$found" ]; then
               echo "::error::No encuentro bin/clang dentro del tarball descargado"
@@ -107,18 +107,15 @@ jobs:
             fi
             CLANG_DIR=$(dirname "$(dirname "$found")")
             echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
-            # Validación estricta sin plan B (si falla, se detiene y muestra librerías faltantes)
             if ! "$CLANG_DIR/bin/clang" --version > /tmp/clang.ver 2>&1; then
               echo "::error::El clang descargado no arranca: $(head -n1 /tmp/clang.ver)"
-              echo "Librerías faltantes:"
-              ldd "$CLANG_DIR/bin/clang" 2>&1 | grep -i 'not found' || true
               exit 1
             fi
             head -n1 /tmp/clang.ver
-            # Enmascarar ccache para clang
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang"
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang++"
           } 2>&1 | tee "$LOG_DIR/setup.log"
+
       - name: ♻️ Restaurar caché de ccache
         uses: actions/cache/restore@v4
         with:
@@ -126,6 +123,7 @@ jobs:
           key: ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-hyperos-u24-${{ runner.os }}-
+
       - name: 🩹 Preparar defconfig y compatibilidad
         id: prep
         shell: bash
@@ -137,13 +135,13 @@ jobs:
               exit 1
             fi
             if grep -qP '^[^\x00-\x7F]+(?=CONFIG_)' "$DEF"; then
-              echo "::warning::$DEFCONFIG tiene caracteres raros antes de CONFIG_; los quito en CI"
               perl -pi -e 's/^[^\x00-\x7F]+(?=CONFIG_)//' "$DEF"
             fi
             if grep -qE '^CONFIG_[A-Za-z0-9_]+ is not set$' "$DEF"; then
               sed -i -E 's/^(CONFIG_[A-Za-z0-9_]+) is not set$/# \1 is not set/' "$DEF"
             fi
           } 2>&1 | tee "$LOG_DIR/prep.log"
+
       - name: ⚙️ Configurar kernel
         id: config
         shell: bash
@@ -154,9 +152,7 @@ jobs:
             echo "clang: $(command -v clang) | $(clang --version | head -n1)"
             make mrproper
             make O=out "$DEFCONFIG"
-            # Desactivar headers para evitar bloqueos
             scripts/config --file out/.config -d HEADERS_INSTALL -d UAPI_HEADER_TEST
-            # Aplicar opciones de KernelSU / SUSFS
             scripts/config --file out/.config $KSU_OPTS
             if [ "$LITE_BUILD" = "true" ]; then
               echo "Modo ligero: LTO y CFI desactivados"
@@ -165,6 +161,7 @@ jobs:
             make O=out olddefconfig
             cp out/.config "$LOG_DIR/dotconfig.txt"
           } 2>&1 | tee "$LOG_DIR/config.log"
+
       - name: 🚀 Compilar kernel
         id: build
         shell: bash
@@ -174,11 +171,12 @@ jobs:
           {
             ccache -z || true
             rc=0
-            make -k -j"$(nproc)" O=out Image || rc=$?
+            make -k -j"$(nproc)" O=out Image LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip || rc=$?
             ccache -s || true
             exit "$rc"
           } 2>&1 | tee "$LOG_DIR/build.log"
           test -s out/arch/arm64/boot/Image
+
       - name: 📦 Empaquetar AnyKernel3 Dinámico
         id: pack
         shell: bash
@@ -207,13 +205,8 @@ jobs:
             7za a -tzip -mx9 -mmt=on "${GITHUB_WORKSPACE}/$ZIP" ./* >/dev/null
             cd "${GITHUB_WORKSPACE}"
             echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
-            {
-              echo "### ✅ HyperOS compilado con éxito (Moderno)"
-              echo "- Kernel: $(grep -a -m1 -o 'Linux version [0-9][^ ]*' "$IMG" || echo n/d)"
-              echo "- Image: $(du -h "$IMG" | cut -f1) · SHA256 \`$(sha256sum "$IMG" | cut -d' ' -f1)\`"
-              echo "- ZIP: \`$ZIP\`"
-            } >> "$GITHUB_STEP_SUMMARY"
           } 2>&1 | tee "$LOG_DIR/pack.log"
+
       - name: ✏️ Subir zip a Actions
         id: upload
         uses: actions/upload-artifact@v4
@@ -221,30 +214,6 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: ${{ github.workspace }}/*.zip
           if-no-files-found: error
-
-      - name: 📝 Crear log de fallo
-        if: ${{ failure() || cancelled() }}
-        shell: bash {0}
-        run: |
-          mkdir -p "$LOG_DIR"
-          L="$LOG_DIR/failure-log.txt"
-          {
-            echo "===== HyperOS star: log de fallo ====="
-            echo "Fecha (UTC): $(date -u '+%F %T')"
-            echo "--- Errores detectados ---"
-            (cd "$LOG_DIR" && grep -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error' *.log 2>/dev/null | head -n 60)
-            echo "--- Último log ---"
-            last=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -n1)
-            [ -n "$last" ] && tail -n 120 "$last"
-          } > "$L" 2>&1
-      - name: 📤 Subir log de fallo
-        if: ${{ failure() || cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: hyperos-log-fallo-${{ github.run_number }}
-          path: ${{ env.LOG_DIR }}
-          retention-days: 14
-          if-no-files-found: warn
 
       - name: 💾 Guardar caché de ccache
         if: ${{ always() }}
