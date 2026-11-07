@@ -1,5 +1,5 @@
 name: Build Xiaomi11U (HyperOS Modern)
-run-name: HyperOS star (Modern) · ${{ inputs.kernel_ref }} · ${{ inputs.defconfig }}
+run-name: "HyperOS star (Modern) · ${{ inputs.kernel_ref }} · ${{ inputs.defconfig }}"
 
 on:
   workflow_dispatch:
@@ -28,15 +28,15 @@ env:
   ZIP_PREFIX: "Kernel-HyperOS-TechMaster-11U"
   REQUIRE_KSU: "true"
 
-  # KernelSU (BakaSU) en modo SUSFS
+  # KernelSU (BakaSU) en modo SUSFS (sin tracepoints para evitar errores GKI)
   KSU_OPTS: >-
     -e KSU -d KSU_TRACEPOINT_HOOK
     -e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT
     -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP
     -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-    -d KSU_SUSFS_ENABLE_LOG
+    -e KSU_SUSFS_ENABLE_LOG
 
-  # Variables de compilación make con herramientas LLVM explícitas para evitar Error 127
+  # Variables de compilación make con herramientas LLVM explícitas
   ARCH: arm64
   LLVM: "1"
   LLVM_IAS: "1"
@@ -57,10 +57,10 @@ env:
     -Wno-declaration-after-statement -Wno-sometimes-uninitialized -Wno-misleading-indentation
     -Wno-fortify-source -Wno-macro-redefined
 
-  CLANG_DIR: ${{ github.workspace }}/clang
-  CCACHE_BIN: ${{ github.workspace }}/ccache-bin
-  LOG_DIR: ${{ github.workspace }}/logs
-  CCACHE_DIR: ${{ github.workspace }/.ccache
+  CLANG_DIR: "${{ github.workspace }}/clang"
+  CCACHE_BIN: "${{ github.workspace }}/ccache-bin"
+  LOG_DIR: "${{ github.workspace }}/logs"
+  CCACHE_DIR: "${{ github.workspace }}/.ccache"
   CCACHE_MAXSIZE: "3G"
   CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
   CCACHE_NOHASHDIR: "true"
@@ -72,18 +72,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     env:
-      KERNEL_REF: ${{ inputs.kernel_ref }}
-      DEFCONFIG: ${{ inputs.defconfig }}
-      LITE_BUILD: ${{ inputs.lite_build }}
+      KERNEL_REF: "${{ inputs.kernel_ref }}"
+      DEFCONFIG: "${{ inputs.defconfig }}"
+      LITE_BUILD: "${{ inputs.lite_build }}"
 
     steps:
       - name: 📥 Descargar kernel HyperOS
         id: checkout
         uses: actions/checkout@v6
         with:
-          repository: ${{ env.KERNEL_REPO }}
-          ref: ${{ inputs.kernel_ref }}
-          path: kernel
+          repository: "${{ env.KERNEL_REPO }}"
+          ref: "${{ inputs.kernel_ref }}"
+          path: "kernel"
           fetch-depth: 1
 
       - name: ⌛ Preparar entorno y Clang 16
@@ -119,8 +119,8 @@ jobs:
       - name: ♻️ Restaurar caché de ccache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: "${{ env.CCACHE_DIR }}"
+          key: "ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}"
           restore-keys: |
             ccache-hyperos-u24-${{ runner.os }}-
 
@@ -183,7 +183,7 @@ jobs:
         run: |
           {
             IMG="kernel/out/arch/arm64/boot/Image"
-            KERNEL_DIR="${GITHUB_WORKSPACE}/kernel"
+            KERNEL_DIR="${{ github.workspace }}/kernel"
             AK3_DIR="${KERNEL_DIR}/AnyKernel3"
             if [ ! -f "$IMG" ]; then
               echo "::error::Image no encontrada en $IMG"
@@ -202,8 +202,8 @@ jobs:
             cp -v "$IMG" "${AK3_DIR}/Image"
             cd "${AK3_DIR}"
             ZIP="${ZIP_PREFIX}-$(date -u +%Y%m%d%H%M%S).zip"
-            7za a -tzip -mx9 -mmt=on "${GITHUB_WORKSPACE}/$ZIP" ./* >/dev/null
-            cd "${GITHUB_WORKSPACE}"
+            7za a -tzip -mx9 -mmt=on "${{ github.workspace }}/$ZIP" ./* >/dev/null
+            cd "${{ github.workspace }}"
             echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
           } 2>&1 | tee "$LOG_DIR/pack.log"
 
@@ -211,13 +211,13 @@ jobs:
         id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ github.workspace }}/*.zip
+          name: "${{ env.ZIP_NAME }}"
+          path: "${{ github.workspace }}/*.zip"
           if-no-files-found: error
 
       - name: 💾 Guardar caché de ccache
-        if: ${{ always() }}
+        if: always()
         uses: actions/cache/save@v4
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: "${{ env.CCACHE_DIR }}"
+          key: "ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}"
