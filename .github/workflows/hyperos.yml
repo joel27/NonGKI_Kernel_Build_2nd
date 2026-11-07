@@ -83,6 +83,7 @@ jobs:
           ref: ${{ inputs.kernel_ref }}
           path: kernel
           fetch-depth: 1
+          submodules: recursive  # <--- CORRECCIÓN: ESTA LÍNEA SE ENCARGA DE LLAMAR A KERNELSU
 
       - name: ⌛ Preparar entorno y Clang 16
         id: setup
