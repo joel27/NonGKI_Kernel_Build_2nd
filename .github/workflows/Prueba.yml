@@ -5,13 +5,13 @@ on:
   workflow_dispatch:
 
 env:
-  # Device env
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   DEVICE_NAME: "xiaomi_11U"
   DEVICE_CODENAME: "star"
 
   CUSTOM_CMDS: "CLANG_TRIPLE=aarch64-linux-gnu-"
-  EXTRA_CMDS: 'LD=ld.lld LLVM=1 LLVM_IAS=1 EXTRA_CFLAGS="-Wno-unused-function -Wno-frame-larger-than"'
+  # Declaración completa de herramientas LLVM para evitar errores 127 de llvm-ar/nm/etc.
+  EXTRA_CMDS: 'LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1 EXTRA_CFLAGS="-Wno-unused-function -Wno-frame-larger-than"'
 
   KERNEL_SOURCE: "https://github.com/joel27/android_kernel_xiaomi_sm8350-hyperos.git"
   KERNEL_BRANCH: "dynamic"
@@ -60,7 +60,7 @@ env:
   PATCHES_BRANCH: "mi_kernel"
 
   SUSFS_FOLDER_FIXED: "mi11_evox_a16"
-  SUSFS_PATCH_FIXED: "susfs_fixed"
+  SUSFS_PATCH_FIXED: "sysfs_fixed"
 
   REKERNEL_ENABLE: "false"
   DROIDSPACES_ENABLE: "false"
@@ -159,7 +159,7 @@ jobs:
           
           echo "Configuración escrita. Iniciando compilación masiva..."
           
-          # Paso 2: Compilar el kernel y guardar todo el flujo en el log
+          # Paso 2: Compilar el kernel pasando explícitamente todas las herramientas de LLVM
           if make -j$(nproc) O=out ARCH=arm64 ${{ env.EXTRA_CMDS }} 2>&1 | tee build_full.log; then
             echo "BUILD_STATUS=SUCCESS" >> $GITHUB_ENV
             echo "✅ Compilación exitosa."
