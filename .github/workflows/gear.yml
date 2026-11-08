@@ -183,13 +183,6 @@ jobs:
           echo "PACK_NAME=${FINAL_ZIP}" >> "${GITHUB_ENV}"
           echo "✅ Zip generado: ${FINAL_ZIP}"
           rm -rf "${TMP_DIR}"
-
-      - name: 📝 Upload Build Log Artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-Compilacion-Log
-          path: device_kernel/build_full.log
           
       - name: 🚀 Upload Artifact to Actions
         uses: actions/upload-artifact@v7
