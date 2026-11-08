@@ -30,10 +30,10 @@ env:
   DEFCONFIG_ORIGIN_IMAGE: ""
   DEFCONFIG_FROM_BOOT: false
 
-  KERNELSU_SOURCE: ""
-  KERNELSU_BRANCH: ""
+  KERNELSU_SOURCE: "https://github.com/tiann/KernelSU"
+  KERNELSU_BRANCH: "main"
 
-  KERNELSU_AUTO_GET: "true"   # KernelSU/SUSFS ya vienen dentro del árbol
+  KERNELSU_AUTO_GET: "false"   # Mantiene desactivada la descarga externa y respeta tu submódulo
   KERNELSU_AUTO_FORK: "bakasu"
 
   SUSFS_ENABLE: true
