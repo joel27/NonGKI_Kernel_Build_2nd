@@ -33,7 +33,7 @@ env:
   KERNELSU_SOURCE: ""
   KERNELSU_BRANCH: ""
 
-  KERNELSU_AUTO_GET: "false"   # KernelSU/SUSFS ya vienen dentro del árbol
+  KERNELSU_AUTO_GET: "true"   # KernelSU/SUSFS ya vienen dentro del árbol
   KERNELSU_AUTO_FORK: "bakasu"
 
   SUSFS_ENABLE: true
