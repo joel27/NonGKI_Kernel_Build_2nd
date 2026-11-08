@@ -110,9 +110,14 @@ jobs:
             echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
             if ! "$CLANG_DIR/bin/clang" --version > /tmp/clang.ver 2>&1; then
               echo "::error::El clang descargado no arranca: $(head -n1 /tmp/clang.ver)"
+              echo "Librerías que le faltan:"
+              ldd "$CLANG_DIR/bin/clang" 2>&1 | grep -i 'not found' || true
               exit 1
             fi
             head -n1 /tmp/clang.ver
+            for t in ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+              if [ ! -x "$CLANG_DIR/bin/$t" ]; then echo "::warning::Falta $t en $CLANG_DIR/bin"; fi
+            done
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang"
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang++"
           } 2>&1 | tee "$LOG_DIR/setup.log"
@@ -133,14 +138,29 @@ jobs:
             DEF="kernel/arch/arm64/configs/${DEFCONFIG}"
             if [ ! -f "$DEF" ]; then
               echo "::error::No existe $DEF"
+              echo "Defconfigs 'star' que sí hay en el repo:"
+              find kernel/arch/arm64/configs -iname '*star*' | sed 's|^kernel/arch/arm64/configs/||'
               exit 1
             fi
             if grep -qP '^[^\x00-\x7F]+(?=CONFIG_)' "$DEF"; then
+              echo "::warning::$DEFCONFIG tiene caracteres raros antes de CONFIG_ (p. ej. un '（'); los quito en CI, corrígelo también en el repo"
               perl -pi -e 's/^[^\x00-\x7F]+(?=CONFIG_)//' "$DEF"
             fi
             if grep -qE '^CONFIG_[A-Za-z0-9_]+ is not set$' "$DEF"; then
+              echo "::warning::$DEFCONFIG tiene líneas 'is not set' sin '# '; las corrijo en CI"
               sed -i -E 's/^(CONFIG_[A-Za-z0-9_]+) is not set$/# \1 is not set/' "$DEF"
             fi
+
+            # ¿Fuentes rotas (#if/#endif descuadrados)? Avisa antes de gastar una compilación entera
+            for f in fs/notify/fdinfo.c kernel/kallsyms.c fs/proc/task_mmu.c fs/namespace.c fs/proc_namespace.c \
+                     fs/proc/base.c fs/readdir.c fs/stat.c fs/statfs.c fs/exec.c fs/open.c fs/namei.c kernel/sys.c; do
+              [ -f "kernel/$f" ] || continue
+              o=$(grep -cE '^[[:space:]]*#[[:space:]]*(if|ifdef|ifndef)([[:space:]]|\()' "kernel/$f" || true)
+              e=$(grep -cE '^[[:space:]]*#[[:space:]]*endif' "kernel/$f" || true)
+              if [ "$o" != "$e" ]; then
+                echo "::warning::kernel/$f tiene $o #if y $e #endif: el archivo viene roto en el repo"
+              fi
+            done
           } 2>&1 | tee "$LOG_DIR/prep.log"
 
       - name: ⚙️ Configurar kernel
@@ -161,7 +181,83 @@ jobs:
             fi
             make O=out olddefconfig
             cp out/.config "$LOG_DIR/dotconfig.txt"
+
+            echo "--- KernelSU / SUSFS ---"
+            grep -E '^(# )?CONFIG_KSU' out/.config || true
+            # Válido: KSU activo, sin hooks de tracepoint, y con SUSFS u hooks manuales
+            if ! grep -qE '^CONFIG_KSU=[ym]$' out/.config \
+               || grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' out/.config \
+               || ! grep -qE '^CONFIG_KSU_(SUSFS|MANUAL_HOOK)=y$' out/.config; then
+              echo "::warning::KernelSU mal configurado: hace falta CONFIG_KSU=y, CONFIG_KSU_SUSFS=y (o KSU_MANUAL_HOOK=y) y sin KSU_TRACEPOINT_HOOK"
+              if [ "$REQUIRE_KSU" = "true" ]; then
+                echo "::error::KernelSU sin SUSFS/hooks manuales o con hooks de tracepoint (REQUIRE_KSU=true)"
+                exit 1
+              fi
+            fi
           } 2>&1 | tee "$LOG_DIR/config.log"
+
+      - name: 🔧 Símbolos globales de SELinux (KernelSU)
+        id: selinux
+        shell: bash
+        run: |
+          cd kernel
+          {
+            # selinuxfs.c (my_write_context, my_sel_open_handle_status) usa fake_state y ksu_selinux_status_lock como
+            # símbolos externos, pero en el BakaSU de upstream están "static" en selinux_hide.c (tu workflow BakaSU los
+            # volvía globales con sed). Resultado: "ld.lld: error: undefined symbol: fake_state" al enlazar vmlinux.
+            # Paso idempotente: quita el "static" y, solo si el símbolo no existe en KernelSU, lo define.
+            echo "--- selinuxfs.c: referencias a los símbolos ---"
+            grep -n -E 'fake_state|ksu_selinux_status_lock' security/selinux/selinuxfs.c | head -n 12 || true
+
+            HIDE=$(find -L KernelSU drivers/kernelsu -name selinux_hide.c -print -quit 2>/dev/null || true)
+            echo "selinux_hide.c: ${HIDE:-(no existe)}"
+
+            KSU_FILES=""
+            for d in KernelSU drivers/kernelsu; do
+              if [ -d "$d" ]; then
+                KSU_FILES="$KSU_FILES $(grep -rlE '\b(fake_state|ksu_selinux_status_lock)\b' --include='*.c' "$d" 2>/dev/null || true)"
+              fi
+            done
+            KSU_FILES=$(for f in $KSU_FILES; do readlink -f "$f"; done | sort -u)
+
+            # 1) quitar "static" de las declaraciones de los dos símbolos
+            for f in $KSU_FILES; do
+              if grep -qE '^[[:space:]]*static[[:space:]][^;=(]*\b(fake_state|ksu_selinux_status_lock)\b' "$f"; then
+                echo "  quitando 'static' en ${f#$PWD/}"
+                sed -i -E 's/^([[:space:]]*)static[[:space:]]+([^;=(]*\b(fake_state|ksu_selinux_status_lock)\b)/\1\2/' "$f"
+              fi
+            done
+
+            # 2) ¿quedó cada símbolo definido (global) en algún .c de KernelSU?
+            have_fake=0; have_lock=0
+            for f in $KSU_FILES; do
+              if grep -qE '^struct[[:space:]]+selinux_state[[:space:]]+fake_state\b' "$f"; then have_fake=1; fi
+              if grep -qE '^struct[[:space:]]+mutex[[:space:]]*\*[[:space:]]*ksu_selinux_status_lock\b' "$f"; then have_lock=1; fi
+            done
+
+            inject() {   # uso: inject "<línea C>"  (la inserta tras el último #include de selinux_hide.c)
+              [ -n "$HIDE" ] || return 1
+              last=$(grep -n '^#include' "$HIDE" | tail -n1 | cut -d: -f1 || true)
+              last=${last:-1}
+              awk -v n="$last" -v add="$1" '{print} NR==n{print add}' "$HIDE" > "$HIDE.tmp" && mv "$HIDE.tmp" "$HIDE"
+            }
+            if [ "$have_fake" = 0 ]; then
+              if inject "struct selinux_state fake_state;"; then echo "  + definido fake_state en $HIDE"
+              else echo "::warning::fake_state no está definido en KernelSU y no hay selinux_hide.c donde ponerlo"; fi
+            fi
+            if [ "$have_lock" = 0 ]; then
+              if inject "struct mutex *ksu_selinux_status_lock = NULL;"; then echo "  + definido ksu_selinux_status_lock en $HIDE"
+              else echo "::warning::ksu_selinux_status_lock no está definido en KernelSU y no hay selinux_hide.c donde ponerlo"; fi
+            fi
+
+            echo "--- Definiciones/usos en KernelSU tras el arreglo ---"
+            for f in $KSU_FILES $HIDE; do
+              [ -f "$f" ] || continue
+              grep -n -E '\b(fake_state|ksu_selinux_status_lock)\b' "$f" | head -n 6 | sed "s|^|  $(basename "$f"):|" || true
+            done
+            echo "--- ¿Se compila selinux_hide? (referencias en Makefile/Kbuild) ---"
+            grep -rn 'selinux_hide' --include=Makefile --include=Kbuild --include='*.mk' KernelSU 2>/dev/null | head -n 5 || echo "  (sin referencias: si el enlace sigue fallando, selinux_hide.o no se está compilando)"
+          } 2>&1 | tee "$LOG_DIR/selinux.log"
 
       - name: 🚀 Compilar kernel
         id: build
@@ -215,6 +311,73 @@ jobs:
           name: "${{ env.ZIP_NAME }}"
           path: "${{ github.workspace }}/*.zip"
           if-no-files-found: error
+
+      # ---------------------------------------------------------------------
+      # Si algo falló (o se canceló por tiempo): crear y subir el log
+      # ---------------------------------------------------------------------
+      - name: 📝 Crear log de fallo
+        if: ${{ failure() || cancelled() }}
+        shell: bash {0}   # sin -e: ningún comando debe cortar la creación del log
+        env:
+          O_CHECKOUT: ${{ steps.checkout.outcome }}
+          O_SETUP: ${{ steps.setup.outcome }}
+          O_PREP: ${{ steps.prep.outcome }}
+          O_CONFIG: ${{ steps.config.outcome }}
+          O_SELINUX: ${{ steps.selinux.outcome }}
+          O_BUILD: ${{ steps.build.outcome }}
+          O_PACK: ${{ steps.pack.outcome }}
+          O_UPLOAD: ${{ steps.upload.outcome }}
+        run: |
+          mkdir -p "$LOG_DIR"
+          L="$LOG_DIR/failure-log.txt"
+          {
+            echo "===== HyperOS star: log de fallo ====="
+            echo "Fecha (UTC): $(date -u '+%F %T')"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (intento $GITHUB_RUN_ATTEMPT)"
+            echo "Kernel: $KERNEL_REPO @ $KERNEL_REF"
+            echo "Commit: $(git -C kernel log -1 --format='%h %s' 2>/dev/null || echo n/d)"
+            echo "Versión: $(sed -n -e 's/^VERSION = //p' -e 's/^PATCHLEVEL = //p' -e 's/^SUBLEVEL = //p' kernel/Makefile 2>/dev/null | head -n3 | paste -sd. -)"
+            echo "Defconfig: $DEFCONFIG | modo ligero: $LITE_BUILD"
+            echo
+            echo "--- Resultado por paso ---"
+            culprit=""
+            for s in checkout setup prep config selinux build pack upload; do
+              v="O_$(echo "$s" | tr a-z A-Z)"
+              printf '%-9s %s\n' "$s" "${!v}"
+              if [ -z "$culprit" ] && [ "${!v}" = "failure" ]; then culprit="$s"; fi
+            done
+            echo "Falló en: ${culprit:-(cancelado o sin determinar)}"
+            echo
+            echo "--- Errores detectados (máx. 60) ---"
+            (cd "$LOG_DIR" && grep -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error|no space left|cannot allocate memory|version .* not found|: not found|cannot open shared object|command not found|no such file or directory|permission denied|^E: ' *.log 2>/dev/null | head -n 60)
+            echo
+            echo "--- Final del último log (120 líneas) ---"
+            last=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -n1)
+            if [ -n "$last" ]; then echo "[$(basename "$last")]"; tail -n 120 "$last"; else echo "(no hay logs de fase)"; fi
+            echo
+            echo "--- Recursos del runner ---"
+            df -h / | tail -n 2
+            free -h | head -n 2
+            sudo dmesg 2>/dev/null | grep -i -E 'out of memory|killed process' | tail -n 5
+          } > "$L" 2>&1
+
+          {
+            echo "### ❌ Falló la compilación de HyperOS"
+            echo
+            echo '```'
+            head -n 90 "$L"
+            echo '```'
+            echo "Log completo en el artifact **hyperos-log-fallo-$GITHUB_RUN_NUMBER**."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📤 Subir log de fallo
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: hyperos-log-fallo-${{ github.run_number }}
+          path: ${{ env.LOG_DIR }}
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: 💾 Guardar caché de ccache
         if: always()
