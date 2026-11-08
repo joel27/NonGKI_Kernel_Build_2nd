@@ -37,7 +37,7 @@ env:
   KERNELSU_AUTO_FORK : "bakasu"
 
   SUSFS_ENABLE : true
-  SUSFS_FIXED : true
+  SUSFS_FIXED : false
 
   NOMOUNT_ENABLE: "true"
 
