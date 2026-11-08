@@ -188,8 +188,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Compilation-Full-Log
-          path: device_kernel/build_full.log
+          name: Kernel-Compilacion-Log
+          path: device_kernel/build.log
 
       - name: 🚀 Upload Artifact to Actions
         uses: actions/upload-artifact@v7
