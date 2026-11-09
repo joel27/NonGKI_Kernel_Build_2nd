@@ -17,13 +17,17 @@ on:
         type: boolean
         default: true
       ksu_latest:
-        description: "Actualizar KernelSU (BakaSU) al último commit antes de compilar"
+        description: "Mover KernelSU (BakaSU) al último commit de su rama principal (si no, el commit fijado)"
         type: boolean
         default: true
       nomount:
-        description: "Aplicar NoMount (acción patch-nomount del repo del workflow)"
+        description: "Integrar NoMount (setup.sh de maxsteeel/nomount)"
         type: boolean
         default: true
+      nomount_ref:
+        description: "Tag, rama o commit de NoMount (vacío = último tag)"
+        type: string
+        default: ""
       nomount_required:
         description: "Fallar si NoMount no se aplica limpio (si no, se compila sin él)"
         type: boolean
@@ -44,9 +48,7 @@ env:
   ZIP_PREFIX: "Kernel-HyperOS-TechMaster-11U"
   REQUIRE_KSU: "true"
 
-  # Variables que leen las acciones locales (.github/workflows/patch-*) del repo del workflow
-  PATCHES_SOURCE: "joel27/NonGKI_Kernel_Patches"
-  PATCHES_BRANCH: "mi_kernel"
+  NOMOUNT_SETUP_URL: "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh"
 
   # KernelSU (BakaSU) en modo SUSFS (sin tracepoints para evitar errores GKI)
   KSU_OPTS: >-
@@ -101,10 +103,6 @@ jobs:
         shell: bash
         run: echo "T0=$(date +%s)" >> "$GITHUB_ENV"
 
-      # Necesario para poder usar las acciones locales (./.github/workflows/patch-nomount, etc.)
-      - name: 🧾 Descargar el repo del workflow (acciones locales)
-        uses: actions/checkout@v6
-
       - name: 📥 Descargar kernel HyperOS
         id: checkout
         uses: actions/checkout@v6
@@ -138,9 +136,11 @@ jobs:
               echo "KSU_TOP=$KSU_TOP" >> "$GITHUB_ENV"
               old=$(git -C "$KSU_TOP" rev-parse --short=8 HEAD)
               echo "KernelSU en uso: ${KSU_TOP#$(pwd -P)/} @ $old"
+              # Historial completo y tags SIEMPRE: BakaSU calcula su versión con git (tag + nº de commits).
+              # Con el clon superficial de actions/checkout salía "v4.1.0 (30701)" en vez de "v4.2.0-rcN".
+              git -C "$KSU_TOP" fetch --unshallow --tags origin 2>/dev/null || git -C "$KSU_TOP" fetch --tags origin
+              echo "versión por git describe: $(git -C "$KSU_TOP" describe --tags 2>/dev/null || echo n/d)"
               if [ "$KSU_LATEST" = "true" ]; then
-                # historial completo y tags: la versión del driver se calcula con git
-                git -C "$KSU_TOP" fetch --unshallow --tags origin 2>/dev/null || git -C "$KSU_TOP" fetch --tags origin
                 git -C "$KSU_TOP" fetch origin HEAD
                 git -C "$KSU_TOP" checkout -q FETCH_HEAD
                 new=$(git -C "$KSU_TOP" rev-parse --short=8 HEAD)
@@ -187,19 +187,29 @@ jobs:
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang++"
           } 2>&1 | tee "$LOG_DIR/setup.log"
 
-      - name: 🔗 Enlazar carpeta que esperan las acciones (device_kernel)
-        if: ${{ inputs.nomount }}
-        shell: bash
-        run: ln -sfn "$GITHUB_WORKSPACE/kernel" "$GITHUB_WORKSPACE/device_kernel"
-
-      - name: 🚫 Patch NoMount
+      - name: 🚫 Integrar NoMount (setup.sh de maxsteeel)
         id: nomount
         if: ${{ inputs.nomount }}
         continue-on-error: true
-        uses: ./.github/workflows/patch-nomount
+        shell: bash
         env:
-          NOMOUNT_ENABLE: "true"
-          DEFCONFIG_NAME: "${{ inputs.defconfig }}"
+          NOMOUNT_REF: "${{ inputs.nomount_ref }}"
+        run: |
+          mkdir -p "$LOG_DIR"
+          cd kernel
+          {
+            curl -fsSL --retry 3 "$NOMOUNT_SETUP_URL" -o /tmp/nomount-setup.sh
+            # Sin argumento: último tag. Con argumento: ese tag/rama/commit.
+            if [ -n "$NOMOUNT_REF" ]; then sh /tmp/nomount-setup.sh "$NOMOUNT_REF"; else sh /tmp/nomount-setup.sh; fi
+            echo "--- Comprobación ---"
+            test -d NoMount/kernel/src || { echo "::error::No existe NoMount/kernel/src"; exit 1; }
+            test -f fs/nomount/Kconfig || { echo "::error::fs/nomount/Kconfig no existe (enlace roto)"; exit 1; }
+            grep -q 'nomount' fs/Makefile || { echo "::error::fs/Makefile sin la línea de NoMount"; exit 1; }
+            grep -q 'fs/nomount/Kconfig' fs/Kconfig || { echo "::error::fs/Kconfig sin el source de NoMount"; exit 1; }
+            echo "NoMount: $(git -C NoMount describe --tags --always 2>/dev/null) | enlace: $(readlink fs/nomount)"
+            echo "--- Símbolos de Kconfig de NoMount ---"
+            grep -hE '^(config|menuconfig)[[:space:]]|^[[:space:]]+depends on' fs/nomount/Kconfig | head -n 20
+          } 2>&1 | tee "$LOG_DIR/nomount.log"
 
       - name: 🛡️ Verificar NoMount (revertir si quedó a medias)
         id: nomount_check
@@ -213,16 +223,16 @@ jobs:
           cd kernel
           {
             rej=$(find . -path ./out -prune -o \( -name '*.rej' -o -name '*.orig' \) -print | head -n 50)
-            echo "Resultado de la acción NoMount: $NM_OUTCOME"
-            echo "--- Cambios que dejó en el árbol ---"
-            git status --short | head -n 60
+            echo "Resultado de la integración NoMount: $NM_OUTCOME"
+            echo "--- Cambios en el árbol ---"
+            git status --short | head -n 40
             bad=0
             [ "$NM_OUTCOME" = "success" ] || bad=1
             if [ -n "$rej" ]; then bad=1; echo "--- Rechazos de parche (.rej/.orig) ---"; echo "$rej"; fi
             if [ "$bad" = "1" ]; then
-              echo "::warning::NoMount no se aplicó limpio (acción: $NM_OUTCOME)"
+              echo "::warning::NoMount no quedó integrado (resultado: $NM_OUTCOME)"
               if [ "$NM_REQUIRED" = "true" ]; then
-                echo "::error::NoMount es obligatorio (nomount_required=true) y no se aplicó limpio"
+                echo "::error::NoMount es obligatorio (nomount_required=true)"
                 exit 1
               fi
               echo "Se revierte el árbol para compilar SIN NoMount (el submódulo de KernelSU no se toca)"
@@ -230,10 +240,10 @@ jobs:
               git clean -fdq
               echo "NOMOUNT_APPLIED=false" >> "$GITHUB_ENV"
             else
-              echo "NoMount aplicado limpio"
+              echo "NoMount integrado"
               echo "NOMOUNT_APPLIED=true" >> "$GITHUB_ENV"
             fi
-          } 2>&1 | tee "$LOG_DIR/nomount.log"
+          } 2>&1 | tee -a "$LOG_DIR/nomount.log"
 
       - name: ♻️ Restaurar caché de ccache
         uses: actions/cache/restore@v4
@@ -285,11 +295,18 @@ jobs:
           {
             echo "clang: $(command -v clang) | $(clang --version | head -n1)"
             make mrproper
+            # mrproper borra los *.i versionados (firmware de touchscreen Focaltech): se restauran para no ensuciar el árbol
+            n=$(git ls-files -d | wc -l)
+            if [ "$n" -gt 0 ]; then
+              echo "mrproper borró $n archivos versionados; se restauran:"
+              git ls-files -d | head -n 10
+              git ls-files -d -z | xargs -0 -r git checkout --
+            fi
             make O=out "$DEFCONFIG"
             scripts/config --file out/.config -d HEADERS_INSTALL -d UAPI_HEADER_TEST
             scripts/config --file out/.config $KSU_OPTS
             if [ "${NOMOUNT_APPLIED:-false}" = "true" ]; then
-              if grep -rqE '^config[[:space:]]+NOMOUNT$' --include='Kconfig*' fs drivers kernel init security 2>/dev/null; then
+              if grep -RqE '^config[[:space:]]+NOMOUNT$' --include='Kconfig*' fs drivers kernel init security 2>/dev/null; then
                 scripts/config --file out/.config -e NOMOUNT
                 echo "NoMount: símbolo CONFIG_NOMOUNT activado"
               fi
@@ -512,7 +529,7 @@ jobs:
             if [ -n "$KSU_TOP" ] && [ -d "$KSU_TOP" ]; then
               echo "KernelSU: ${KSU_TOP##*/} @ $(git -C "$KSU_TOP" log -1 --format='%h %s' 2>/dev/null)"
             fi
-            echo "NoMount aplicado: ${NOMOUNT_APPLIED:-no (omitido o no verificado)}"
+            echo "NoMount integrado: ${NOMOUNT_APPLIED:-no (omitido o no verificado)}$( [ -d kernel/NoMount ] && echo " | $(git -C kernel/NoMount describe --tags --always 2>/dev/null)" )"
             echo
             echo "--- Resultado por paso ---"
             culprit=""
