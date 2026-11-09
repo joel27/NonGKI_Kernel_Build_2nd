@@ -1,5 +1,5 @@
 name: Build Xiaomi11U (HyperOS Modern)
-run-name: "HyperOS star (Modern) · ${{ inputs.kernel_ref }} · ${{ inputs.defconfig }}"
+run-name: "HyperOS star · ${{ inputs.root_mode }} · ${{ inputs.kernel_ref }} · ${{ inputs.defconfig }}"
 
 on:
   workflow_dispatch:
@@ -12,6 +12,18 @@ on:
         description: "Defconfig (ruta dentro de arch/arm64/configs)"
         type: string
         default: "vendor/star_defconfig"
+      root_mode:
+        description: "Tipo de kernel: KSU-Susfs (BakaSU + SUSFS) / KSU (BakaSU sin SUSFS) / Vanilla (sin root)"
+        type: choice
+        options:
+          - KSU-Susfs
+          - KSU
+          - Vanilla
+        default: KSU-Susfs
+      merge_qgki:
+        description: "Mezclar star_QGKI.config y xiaomi_QGKI.config sobre el defconfig"
+        type: boolean
+        default: false
       lite_build:
         description: "Compilar ligero (sin LTO/CFI)"
         type: boolean
@@ -50,13 +62,31 @@ env:
 
   NOMOUNT_SETUP_URL: "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh"
 
-  # KernelSU (BakaSU) en modo SUSFS (sin tracepoints para evitar errores GKI)
-  KSU_OPTS: >-
-    -e KSU -d KSU_TRACEPOINT_HOOK
+  # Archivos que se mezclan sobre el defconfig cuando merge_qgki=true (rutas dentro de arch/arm64/configs)
+  MERGE_CONFIG_FILES: "vendor/star_QGKI.config,vendor/xiaomi_QGKI.config"
+
+  # Opciones de root según el input root_mode (siempre sin hooks de tracepoint, para evitar errores GKI)
+  # KSU-Susfs: BakaSU con SUSFS (hooks inline)
+  KSU_OPTS_SUSFS: >-
+    -e KSU -d KSU_TRACEPOINT_HOOK -d KSU_MANUAL_HOOK
     -e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT
     -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP
     -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
     -e KSU_SUSFS_ENABLE_LOG
+  # KSU: BakaSU sin SUSFS (hooks manuales)
+  KSU_OPTS_KSU: >-
+    -e KSU -d KSU_TRACEPOINT_HOOK -e KSU_MANUAL_HOOK
+    -d KSU_SUSFS -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_MOUNT -d KSU_SUSFS_SUS_KSTAT
+    -d KSU_SUSFS_SPOOF_UNAME -d KSU_SUSFS_OPEN_REDIRECT -d KSU_SUSFS_SUS_MAP
+    -d KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+    -d KSU_SUSFS_ENABLE_LOG
+  # Vanilla: sin KernelSU ni SUSFS
+  KSU_OPTS_VANILLA: >-
+    -d KSU -d KSU_TRACEPOINT_HOOK -d KSU_MANUAL_HOOK
+    -d KSU_SUSFS -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_MOUNT -d KSU_SUSFS_SUS_KSTAT
+    -d KSU_SUSFS_SPOOF_UNAME -d KSU_SUSFS_OPEN_REDIRECT -d KSU_SUSFS_SUS_MAP
+    -d KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+    -d KSU_SUSFS_ENABLE_LOG
 
   # Variables de compilación make con herramientas LLVM explícitas
   ARCH: arm64
@@ -97,6 +127,8 @@ jobs:
       KERNEL_REF: "${{ inputs.kernel_ref }}"
       DEFCONFIG: "${{ inputs.defconfig }}"
       LITE_BUILD: "${{ inputs.lite_build }}"
+      ROOT_MODE: "${{ inputs.root_mode }}"
+      BUILD_OTHER_CONFIG: "${{ inputs.merge_qgki }}"
 
     steps:
       - name: ⏱️ Marcar inicio
@@ -115,6 +147,7 @@ jobs:
 
       - name: 🔎 Revisar y actualizar KernelSU (BakaSU)
         id: ksu
+        if: ${{ inputs.root_mode != 'Vanilla' }}
         shell: bash
         env:
           KSU_LATEST: "${{ inputs.ksu_latest }}"
@@ -246,7 +279,7 @@ jobs:
           } 2>&1 | tee -a "$LOG_DIR/nomount.log"
 
       - name: ♻️ Restaurar caché de ccache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: "${{ env.CCACHE_DIR }}"
           key: "ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}"
@@ -302,9 +335,32 @@ jobs:
               git ls-files -d | head -n 10
               git ls-files -d -z | xargs -0 -r git checkout --
             fi
-            make O=out "$DEFCONFIG"
+            # Merge opcional de los .config de Qualcomm/Xiaomi (equivale a: make O=out <defconfig> <archivo.config> ...)
+            MERGE_ARGS=""
+            if [ "$BUILD_OTHER_CONFIG" = "true" ]; then
+              for f in ${MERGE_CONFIG_FILES//,/ }; do
+                if [ -f "arch/arm64/configs/$f" ]; then
+                  MERGE_ARGS="$MERGE_ARGS $f"
+                else
+                  echo "::error::No existe arch/arm64/configs/$f"
+                  echo "Archivos .config disponibles:"
+                  find arch/arm64/configs -name '*.config' | sed 's|^arch/arm64/configs/||' | sort | head -n 30
+                  exit 1
+                fi
+              done
+              echo "Merge de configs sobre $DEFCONFIG:$MERGE_ARGS"
+            else
+              echo "Sin merge de configs QGKI (merge_qgki=false)"
+            fi
+            make O=out "$DEFCONFIG" $MERGE_ARGS
             scripts/config --file out/.config -d HEADERS_INSTALL -d UAPI_HEADER_TEST
-            scripts/config --file out/.config $KSU_OPTS
+            case "$ROOT_MODE" in
+              Vanilla) KOPTS="$KSU_OPTS_VANILLA" ;;
+              KSU)     KOPTS="$KSU_OPTS_KSU" ;;
+              *)       KOPTS="$KSU_OPTS_SUSFS" ;;
+            esac
+            echo "Modo de root: $ROOT_MODE"
+            scripts/config --file out/.config $KOPTS
             if [ "${NOMOUNT_APPLIED:-false}" = "true" ]; then
               if grep -RqE '^config[[:space:]]+NOMOUNT$' --include='Kconfig*' fs drivers kernel init security 2>/dev/null; then
                 scripts/config --file out/.config -e NOMOUNT
@@ -322,13 +378,26 @@ jobs:
             grep -E '^(# )?CONFIG_KSU' out/.config || true
             echo "--- NoMount ---"
             grep -iE 'nomount' out/.config || echo "(sin símbolos NOMOUNT en .config; aplicado=${NOMOUNT_APPLIED:-no})"
-            # Válido: KSU activo, sin hooks de tracepoint, y con SUSFS u hooks manuales
-            if ! grep -qE '^CONFIG_KSU=[ym]$' out/.config \
-               || grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' out/.config \
-               || ! grep -qE '^CONFIG_KSU_(SUSFS|MANUAL_HOOK)=y$' out/.config; then
-              echo "::warning::KernelSU mal configurado: hace falta CONFIG_KSU=y, CONFIG_KSU_SUSFS=y (o KSU_MANUAL_HOOK=y) y sin KSU_TRACEPOINT_HOOK"
+            # Coherencia entre el .config final y el modo elegido
+            ksu_on=0;    if grep -qE '^CONFIG_KSU=[ym]$' out/.config; then ksu_on=1; fi
+            susfs_on=0;  if grep -q '^CONFIG_KSU_SUSFS=y$' out/.config; then susfs_on=1; fi
+            manual_on=0; if grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' out/.config; then manual_on=1; fi
+            trace_on=0;  if grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' out/.config; then trace_on=1; fi
+            bad=""
+            case "$ROOT_MODE" in
+              Vanilla)
+                [ "$ksu_on" = 0 ] || bad="KSU sigue activo en modo Vanilla" ;;
+              KSU)
+                { [ "$ksu_on" = 1 ] && [ "$susfs_on" = 0 ] && [ "$manual_on" = 1 ] && [ "$trace_on" = 0 ]; } \
+                  || bad="modo KSU requiere KSU=y y KSU_MANUAL_HOOK=y, sin SUSFS ni tracepoints (ksu=$ksu_on susfs=$susfs_on manual=$manual_on trace=$trace_on)" ;;
+              *)
+                { [ "$ksu_on" = 1 ] && [ "$susfs_on" = 1 ] && [ "$trace_on" = 0 ]; } \
+                  || bad="modo KSU-Susfs requiere KSU=y y KSU_SUSFS=y, sin tracepoints (ksu=$ksu_on susfs=$susfs_on trace=$trace_on)" ;;
+            esac
+            if [ -n "$bad" ]; then
+              echo "::warning::Config incoherente con el modo $ROOT_MODE: $bad"
               if [ "$REQUIRE_KSU" = "true" ]; then
-                echo "::error::KernelSU sin SUSFS/hooks manuales o con hooks de tracepoint (REQUIRE_KSU=true)"
+                echo "::error::$bad (REQUIRE_KSU=true)"
                 exit 1
               fi
             fi
@@ -336,6 +405,7 @@ jobs:
 
       - name: 🔧 Símbolos globales de SELinux (KernelSU)
         id: selinux
+        if: ${{ inputs.root_mode != 'Vanilla' }}
         shell: bash
         run: |
           cd kernel
@@ -399,7 +469,7 @@ jobs:
 
       - name: 🧩 Generar headers UAPI (para el preinit de BakaSU)
         id: headers
-        if: ${{ inputs.headers_preinit }}
+        if: ${{ inputs.headers_preinit && inputs.root_mode != 'Vanilla' }}
         continue-on-error: true
         shell: bash
         run: |
@@ -459,15 +529,20 @@ jobs:
             git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$AK3_DIR"
             curl -fsSL --retry 3 https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o "${AK3_DIR}/anykernel.sh"
             chmod +x "${AK3_DIR}/anykernel.sh"
+            case "$ROOT_MODE" in
+              Vanilla) AKNAME="11U-Vanilla"; TAG="Vanilla" ;;
+              KSU)     AKNAME="11U-KSU";     TAG="KSU" ;;
+              *)       AKNAME="11U-Bakasu";  TAG="KSU-Susfs" ;;
+            esac
             sed -i \
-              -e 's/^name=.*/name="11U-Bakasu"/' \
+              -e "s/^name=.*/name=\"${AKNAME}\"/" \
               -e 's/^do\.devicecheck=.*/do.devicecheck=0/' \
               -e 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=1/' \
               -e 's/^BLOCK=.*/BLOCK=boot/' \
               "${AK3_DIR}/anykernel.sh"
             cp -v "$IMG" "${AK3_DIR}/Image"
             cd "${AK3_DIR}"
-            ZIP="${ZIP_PREFIX}-$(date -u +%Y%m%d%H%M%S).zip"
+            ZIP="${ZIP_PREFIX}-${TAG}-$(date -u +%Y%m%d%H%M%S).zip"
             7za a -tzip -mx9 -mmt=on "${{ github.workspace }}/$ZIP" ./* >/dev/null
             cd "${{ github.workspace }}"
             echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
@@ -475,7 +550,7 @@ jobs:
 
       - name: ✏️ Subir zip a Actions
         id: upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: "${{ env.ZIP_NAME }}"
           path: "${{ github.workspace }}/*.zip"
@@ -523,7 +598,7 @@ jobs:
             echo "Fecha (UTC): $(date -u '+%F %T') | duración: $((DUR/60)) min $((DUR%60)) s"
             echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (intento $GITHUB_RUN_ATTEMPT)"
             echo "Kernel: $KERNEL_REPO @ $KERNEL_REF | commit: $(git -C kernel log -1 --format='%h %s' 2>/dev/null || echo n/d)"
-            echo "Defconfig: $DEFCONFIG | modo ligero: $LITE_BUILD"
+            echo "Defconfig: $DEFCONFIG | modo ligero: $LITE_BUILD | root: $ROOT_MODE | merge QGKI: $BUILD_OTHER_CONFIG"
             echo "Versión del kernel compilado: ${REL:-(no se llegó a generar)}"
             case "$REL" in *-dirty*) echo "AVISO: la versión aún lleva -dirty";; esac
             if [ -n "$KSU_TOP" ] && [ -d "$KSU_TOP" ]; then
@@ -557,6 +632,8 @@ jobs:
               grep ' warning: ' "$B" | sed -nE 's/.*\[(-W[A-Za-z0-9=_+-]+)\]$/\1/p' | sort | uniq -c | sort -rn | head -n 12
               echo "Mensajes de preinit de BakaSU:"
               grep -iE 'preinit' "$B" | sort | uniq -c | head -n 6 || true
+              echo "BakaSU (método de hooks y versión):"
+              grep -E '^-- BakaSU( version| :|: using)|^-- SUSFS_VERSION' "$B" | head -n 8
               echo "Avisos 'No such file' del make anidado: $(grep -c 'No such file or directory' "$B")"
               echo "ccache:"
               grep -E 'cache hit|cache miss|Hits:|Misses:|Cacheable calls' "$B" | tail -n 6
@@ -606,7 +683,7 @@ jobs:
 
       - name: 💾 Guardar caché de ccache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: "${{ env.CCACHE_DIR }}"
           key: "ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}"
