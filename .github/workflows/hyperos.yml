@@ -16,6 +16,22 @@ on:
         description: "Compilar ligero (sin LTO/CFI)"
         type: boolean
         default: true
+      ksu_latest:
+        description: "Actualizar KernelSU (BakaSU) al último commit antes de compilar"
+        type: boolean
+        default: true
+      nomount:
+        description: "Aplicar NoMount (acción patch-nomount del repo del workflow)"
+        type: boolean
+        default: true
+      nomount_required:
+        description: "Fallar si NoMount no se aplica limpio (si no, se compila sin él)"
+        type: boolean
+        default: false
+      headers_preinit:
+        description: "Generar headers UAPI antes de compilar (para el preinit de BakaSU)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -27,6 +43,10 @@ env:
   CLANG_URL: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz"
   ZIP_PREFIX: "Kernel-HyperOS-TechMaster-11U"
   REQUIRE_KSU: "true"
+
+  # Variables que leen las acciones locales (.github/workflows/patch-*) del repo del workflow
+  PATCHES_SOURCE: "joel27/NonGKI_Kernel_Patches"
+  PATCHES_BRANCH: "mi_kernel"
 
   # KernelSU (BakaSU) en modo SUSFS (sin tracepoints para evitar errores GKI)
   KSU_OPTS: >-
@@ -77,6 +97,14 @@ jobs:
       LITE_BUILD: "${{ inputs.lite_build }}"
 
     steps:
+      - name: ⏱️ Marcar inicio
+        shell: bash
+        run: echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+
+      # Necesario para poder usar las acciones locales (./.github/workflows/patch-nomount, etc.)
+      - name: 🧾 Descargar el repo del workflow (acciones locales)
+        uses: actions/checkout@v6
+
       - name: 📥 Descargar kernel HyperOS
         id: checkout
         uses: actions/checkout@v6
@@ -86,6 +114,43 @@ jobs:
           path: "kernel"
           submodules: recursive
           fetch-depth: 1
+
+      - name: 🔎 Revisar y actualizar KernelSU (BakaSU)
+        id: ksu
+        shell: bash
+        env:
+          KSU_LATEST: "${{ inputs.ksu_latest }}"
+        run: |
+          mkdir -p "$LOG_DIR"
+          cd kernel
+          {
+            echo "--- Submódulos fijados en el repo (commit que baja 'submodules: recursive') ---"
+            git submodule status --recursive || true
+            echo "--- drivers/kernelsu (lo que realmente compila el kernel) ---"
+            ls -ld drivers/kernelsu 2>&1 || true
+            KSU_TOP=""
+            if [ -e drivers/kernelsu ]; then
+              KSU_TOP=$(git -C "$(readlink -f drivers/kernelsu)" rev-parse --show-toplevel 2>/dev/null || true)
+            fi
+            if [ -z "$KSU_TOP" ] || [ "$KSU_TOP" = "$(pwd -P)" ]; then
+              echo "::warning::drivers/kernelsu no apunta a un submódulo: no se puede revisar/actualizar KernelSU"
+            else
+              echo "KSU_TOP=$KSU_TOP" >> "$GITHUB_ENV"
+              old=$(git -C "$KSU_TOP" rev-parse --short=8 HEAD)
+              echo "KernelSU en uso: ${KSU_TOP#$(pwd -P)/} @ $old"
+              if [ "$KSU_LATEST" = "true" ]; then
+                # historial completo y tags: la versión del driver se calcula con git
+                git -C "$KSU_TOP" fetch --unshallow --tags origin 2>/dev/null || git -C "$KSU_TOP" fetch --tags origin
+                git -C "$KSU_TOP" fetch origin HEAD
+                git -C "$KSU_TOP" checkout -q FETCH_HEAD
+                new=$(git -C "$KSU_TOP" rev-parse --short=8 HEAD)
+                echo "KernelSU actualizado: $old -> $new"
+                git -C "$KSU_TOP" log --oneline -n 8 || true
+              else
+                echo "ksu_latest=false: se compila el commit fijado ($old)"
+              fi
+            fi
+          } 2>&1 | tee "$LOG_DIR/ksu.log"
 
       - name: ⌛ Preparar entorno y Clang 16
         id: setup
@@ -121,6 +186,54 @@ jobs:
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang"
             ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang++"
           } 2>&1 | tee "$LOG_DIR/setup.log"
+
+      - name: 🔗 Enlazar carpeta que esperan las acciones (device_kernel)
+        if: ${{ inputs.nomount }}
+        shell: bash
+        run: ln -sfn "$GITHUB_WORKSPACE/kernel" "$GITHUB_WORKSPACE/device_kernel"
+
+      - name: 🚫 Patch NoMount
+        id: nomount
+        if: ${{ inputs.nomount }}
+        continue-on-error: true
+        uses: ./.github/workflows/patch-nomount
+        env:
+          NOMOUNT_ENABLE: "true"
+          DEFCONFIG_NAME: "${{ inputs.defconfig }}"
+
+      - name: 🛡️ Verificar NoMount (revertir si quedó a medias)
+        id: nomount_check
+        if: ${{ inputs.nomount }}
+        shell: bash
+        env:
+          NM_OUTCOME: "${{ steps.nomount.outcome }}"
+          NM_REQUIRED: "${{ inputs.nomount_required }}"
+        run: |
+          mkdir -p "$LOG_DIR"
+          cd kernel
+          {
+            rej=$(find . -path ./out -prune -o \( -name '*.rej' -o -name '*.orig' \) -print | head -n 50)
+            echo "Resultado de la acción NoMount: $NM_OUTCOME"
+            echo "--- Cambios que dejó en el árbol ---"
+            git status --short | head -n 60
+            bad=0
+            [ "$NM_OUTCOME" = "success" ] || bad=1
+            if [ -n "$rej" ]; then bad=1; echo "--- Rechazos de parche (.rej/.orig) ---"; echo "$rej"; fi
+            if [ "$bad" = "1" ]; then
+              echo "::warning::NoMount no se aplicó limpio (acción: $NM_OUTCOME)"
+              if [ "$NM_REQUIRED" = "true" ]; then
+                echo "::error::NoMount es obligatorio (nomount_required=true) y no se aplicó limpio"
+                exit 1
+              fi
+              echo "Se revierte el árbol para compilar SIN NoMount (el submódulo de KernelSU no se toca)"
+              git reset -q --hard HEAD
+              git clean -fdq
+              echo "NOMOUNT_APPLIED=false" >> "$GITHUB_ENV"
+            else
+              echo "NoMount aplicado limpio"
+              echo "NOMOUNT_APPLIED=true" >> "$GITHUB_ENV"
+            fi
+          } 2>&1 | tee "$LOG_DIR/nomount.log"
 
       - name: ♻️ Restaurar caché de ccache
         uses: actions/cache/restore@v4
@@ -175,6 +288,12 @@ jobs:
             make O=out "$DEFCONFIG"
             scripts/config --file out/.config -d HEADERS_INSTALL -d UAPI_HEADER_TEST
             scripts/config --file out/.config $KSU_OPTS
+            if [ "${NOMOUNT_APPLIED:-false}" = "true" ]; then
+              if grep -rqE '^config[[:space:]]+NOMOUNT$' --include='Kconfig*' fs drivers kernel init security 2>/dev/null; then
+                scripts/config --file out/.config -e NOMOUNT
+                echo "NoMount: símbolo CONFIG_NOMOUNT activado"
+              fi
+            fi
             if [ "$LITE_BUILD" = "true" ]; then
               echo "Modo ligero: LTO y CFI desactivados"
               scripts/config --file out/.config -e LTO_NONE -d LTO_CLANG -d CFI_CLANG -d CFI_PERMISSIVE
@@ -184,6 +303,8 @@ jobs:
 
             echo "--- KernelSU / SUSFS ---"
             grep -E '^(# )?CONFIG_KSU' out/.config || true
+            echo "--- NoMount ---"
+            grep -iE 'nomount' out/.config || echo "(sin símbolos NOMOUNT en .config; aplicado=${NOMOUNT_APPLIED:-no})"
             # Válido: KSU activo, sin hooks de tracepoint, y con SUSFS u hooks manuales
             if ! grep -qE '^CONFIG_KSU=[ym]$' out/.config \
                || grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' out/.config \
@@ -259,6 +380,37 @@ jobs:
             grep -rn 'selinux_hide' --include=Makefile --include=Kbuild --include='*.mk' KernelSU 2>/dev/null | head -n 5 || echo "  (sin referencias: si el enlace sigue fallando, selinux_hide.o no se está compilando)"
           } 2>&1 | tee "$LOG_DIR/selinux.log"
 
+      - name: 🧩 Generar headers UAPI (para el preinit de BakaSU)
+        id: headers
+        if: ${{ inputs.headers_preinit }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          export PATH="$CCACHE_BIN:$CLANG_DIR/bin:$PATH"
+          cd kernel
+          {
+            make -j"$(nproc)" O=out headers_install LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
+            if [ -d out/usr/include ]; then echo "out/usr/include listo"; else echo "::warning::out/usr/include no se generó"; fi
+          } 2>&1 | tee "$LOG_DIR/headers.log"
+
+      - name: 🏷️ Versión limpia (sin -dirty)
+        id: version
+        shell: bash
+        run: |
+          cd kernel
+          {
+            echo "--- Modificaciones hechas por el CI (quedan registradas aquí) ---"
+            echo "[kernel]"; git status --short -uno || true
+            git submodule foreach --quiet --recursive 'echo "[$displaypath]"; git status --short -uno || true'
+            # 1) submódulos (KernelSU): los archivos tocados por el CI no cuentan como "dirty" en la versión del driver
+            git submodule foreach --quiet --recursive 'git diff --name-only -z | xargs -0 -r git update-index --assume-unchanged --'
+            # 2) kernel: sufijo SCM fijo con el commit base y sin -dirty (setlocalversion lee .scmversion)
+            base=$(git rev-parse --short=7 HEAD)
+            printf '%s\n' "-g$base" > .scmversion
+            rm -f out/include/config/kernel.release out/include/generated/utsrelease.h
+            echo "Sufijo de versión fijado: -g$base"
+          } 2>&1 | tee "$LOG_DIR/version.log"
+
       - name: 🚀 Compilar kernel
         id: build
         shell: bash
@@ -313,68 +465,124 @@ jobs:
           if-no-files-found: error
 
       # ---------------------------------------------------------------------
-      # Si algo falló (o se canceló por tiempo): crear y subir el log
+      # Informe de compilación: se genera SIEMPRE (éxito, fallo o cancelación)
       # ---------------------------------------------------------------------
-      - name: 📝 Crear log de fallo
-        if: ${{ failure() || cancelled() }}
-        shell: bash {0}   # sin -e: ningún comando debe cortar la creación del log
+      - name: 📝 Informe de compilación (éxito o fallo)
+        id: report
+        if: ${{ always() }}
+        shell: bash {0}   # sin -e: ningún comando debe cortar la creación del informe
         env:
+          JOB_STATUS: ${{ job.status }}
           O_CHECKOUT: ${{ steps.checkout.outcome }}
+          O_KSU: ${{ steps.ksu.outcome }}
           O_SETUP: ${{ steps.setup.outcome }}
+          O_NOMOUNT: ${{ steps.nomount.outcome }}
+          O_NMCHECK: ${{ steps.nomount_check.outcome }}
           O_PREP: ${{ steps.prep.outcome }}
           O_CONFIG: ${{ steps.config.outcome }}
           O_SELINUX: ${{ steps.selinux.outcome }}
+          O_HEADERS: ${{ steps.headers.outcome }}
+          O_VERSION: ${{ steps.version.outcome }}
           O_BUILD: ${{ steps.build.outcome }}
           O_PACK: ${{ steps.pack.outcome }}
           O_UPLOAD: ${{ steps.upload.outcome }}
         run: |
           mkdir -p "$LOG_DIR"
-          L="$LOG_DIR/failure-log.txt"
+          R="$LOG_DIR/build-report.txt"
+          case "$JOB_STATUS" in
+            success)   RES="✅ ÉXITO" ;;
+            cancelled) RES="⏹️ CANCELADO" ;;
+            *)         RES="❌ FALLO" ;;
+          esac
+          NOW=$(date +%s); DUR=$(( NOW - ${T0:-$NOW} ))
+          REL=""
+          if [ -f kernel/out/include/generated/utsrelease.h ]; then
+            REL=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' kernel/out/include/generated/utsrelease.h)
+          fi
+          B="$LOG_DIR/build.log"
           {
-            echo "===== HyperOS star: log de fallo ====="
-            echo "Fecha (UTC): $(date -u '+%F %T')"
+            echo "===== HyperOS star: informe de compilación ====="
+            echo "Resultado: $RES"
+            echo "Fecha (UTC): $(date -u '+%F %T') | duración: $((DUR/60)) min $((DUR%60)) s"
             echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (intento $GITHUB_RUN_ATTEMPT)"
-            echo "Kernel: $KERNEL_REPO @ $KERNEL_REF"
-            echo "Commit: $(git -C kernel log -1 --format='%h %s' 2>/dev/null || echo n/d)"
-            echo "Versión: $(sed -n -e 's/^VERSION = //p' -e 's/^PATCHLEVEL = //p' -e 's/^SUBLEVEL = //p' kernel/Makefile 2>/dev/null | head -n3 | paste -sd. -)"
+            echo "Kernel: $KERNEL_REPO @ $KERNEL_REF | commit: $(git -C kernel log -1 --format='%h %s' 2>/dev/null || echo n/d)"
             echo "Defconfig: $DEFCONFIG | modo ligero: $LITE_BUILD"
+            echo "Versión del kernel compilado: ${REL:-(no se llegó a generar)}"
+            case "$REL" in *-dirty*) echo "AVISO: la versión aún lleva -dirty";; esac
+            if [ -n "$KSU_TOP" ] && [ -d "$KSU_TOP" ]; then
+              echo "KernelSU: ${KSU_TOP##*/} @ $(git -C "$KSU_TOP" log -1 --format='%h %s' 2>/dev/null)"
+            fi
+            echo "NoMount aplicado: ${NOMOUNT_APPLIED:-no (omitido o no verificado)}"
             echo
             echo "--- Resultado por paso ---"
             culprit=""
-            for s in checkout setup prep config selinux build pack upload; do
-              v="O_$(echo "$s" | tr a-z A-Z)"
+            for s in CHECKOUT KSU SETUP NOMOUNT NMCHECK PREP CONFIG SELINUX HEADERS VERSION BUILD PACK UPLOAD; do
+              v="O_$s"
               printf '%-9s %s\n' "$s" "${!v}"
               if [ -z "$culprit" ] && [ "${!v}" = "failure" ]; then culprit="$s"; fi
             done
-            echo "Falló en: ${culprit:-(cancelado o sin determinar)}"
+            [ "$JOB_STATUS" = "success" ] || echo "Primer paso con fallo: ${culprit:-(cancelado o sin determinar)}"
             echo
-            echo "--- Errores detectados (máx. 60) ---"
-            (cd "$LOG_DIR" && grep -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error|no space left|cannot allocate memory|version .* not found|: not found|cannot open shared object|command not found|no such file or directory|permission denied|^E: ' *.log 2>/dev/null | head -n 60)
+            echo "--- Configuración relevante (.config) ---"
+            if [ -f "$LOG_DIR/dotconfig.txt" ]; then
+              grep -E '^(# )?CONFIG_(KSU|LOCALVERSION|LTO_CLANG|CFI_CLANG|HEADERS_INSTALL|UAPI_HEADER_TEST)|NOMOUNT' "$LOG_DIR/dotconfig.txt" | head -n 40
+            else
+              echo "(no se llegó a generar .config)"
+            fi
             echo
-            echo "--- Final del último log (120 líneas) ---"
-            last=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -n1)
-            if [ -n "$last" ]; then echo "[$(basename "$last")]"; tail -n 120 "$last"; else echo "(no hay logs de fase)"; fi
+            echo "--- Modificaciones del CI sobre las fuentes ---"
+            if [ -f "$LOG_DIR/version.log" ]; then sed -n '2,25p' "$LOG_DIR/version.log"; else echo "(paso de versión no ejecutado)"; fi
+            echo
+            echo "--- Compilación ---"
+            if [ -f "$B" ]; then
+              echo "warnings: $(grep -c ' warning: ' "$B")  | errores: $(grep -c -E ' error: |\*\*\* ' "$B")"
+              echo "Warnings por tipo (top 12):"
+              grep ' warning: ' "$B" | sed -nE 's/.*\[(-W[A-Za-z0-9=_+-]+)\]$/\1/p' | sort | uniq -c | sort -rn | head -n 12
+              echo "Mensajes de preinit de BakaSU:"
+              grep -iE 'preinit' "$B" | sort | uniq -c | head -n 6 || true
+              echo "Avisos 'No such file' del make anidado: $(grep -c 'No such file or directory' "$B")"
+              echo "ccache:"
+              grep -E 'cache hit|cache miss|Hits:|Misses:|Cacheable calls' "$B" | tail -n 6
+            else
+              echo "(no hay build.log: no se llegó a compilar)"
+            fi
+            echo
+            if [ -f kernel/out/arch/arm64/boot/Image ]; then
+              echo "Image: $(stat -c %s kernel/out/arch/arm64/boot/Image) bytes"
+            fi
+            if [ -n "$ZIP_NAME" ] && [ -f "$GITHUB_WORKSPACE/$ZIP_NAME" ]; then
+              echo "ZIP: $ZIP_NAME | $(stat -c %s "$GITHUB_WORKSPACE/$ZIP_NAME") bytes"
+              echo "sha256: $(sha256sum "$GITHUB_WORKSPACE/$ZIP_NAME" | cut -d' ' -f1)"
+            fi
+            if [ "$JOB_STATUS" != "success" ]; then
+              echo
+              echo "--- Errores detectados (máx. 60) ---"
+              (cd "$LOG_DIR" && grep -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error|no space left|cannot allocate memory|version .* not found|: not found|cannot open shared object|command not found|permission denied|^E: ' *.log 2>/dev/null | grep -v 'No such file or directory' | head -n 60)
+              echo
+              echo "--- Final del último log (120 líneas) ---"
+              last=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -n1)
+              if [ -n "$last" ]; then echo "[$(basename "$last")]"; tail -n 120 "$last"; else echo "(no hay logs de fase)"; fi
+            fi
             echo
             echo "--- Recursos del runner ---"
             df -h / | tail -n 2
             free -h | head -n 2
-            sudo dmesg 2>/dev/null | grep -i -E 'out of memory|killed process' | tail -n 5
-          } > "$L" 2>&1
+          } > "$R" 2>&1
 
           {
-            echo "### ❌ Falló la compilación de HyperOS"
+            echo "### $RES · HyperOS star"
             echo
             echo '```'
-            head -n 90 "$L"
+            head -n 90 "$R"
             echo '```'
-            echo "Log completo en el artifact **hyperos-log-fallo-$GITHUB_RUN_NUMBER**."
+            echo "Informe completo en el artifact **hyperos-informe-$GITHUB_RUN_NUMBER**."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 📤 Subir log de fallo
-        if: ${{ failure() || cancelled() }}
+      - name: 📤 Subir informe y logs
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: hyperos-log-fallo-${{ github.run_number }}
+          name: hyperos-informe-${{ github.run_number }}
           path: ${{ env.LOG_DIR }}
           retention-days: 14
           if-no-files-found: warn
