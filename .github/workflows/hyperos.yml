@@ -7,7 +7,7 @@ on:
       kernel_ref:
         description: "Rama o tag del repo HyperOS"
         type: string
-        default: "dynamic"
+        default: "HOS4-A17"
       defconfig:
         description: "Defconfig (ruta dentro de arch/arm64/configs)"
         type: string
