@@ -14,7 +14,7 @@ env:
   EXTRA_CMDS: 'LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1 EXTRA_CFLAGS="-Wno-unused-function -Wno-frame-larger-than"'
 
   KERNEL_SOURCE : "https://github.com/joel27/android_kernel_xiaomi_sm8350-hyperos.git"
-  KERNEL_BRANCH : "dynamic-clean"
+  KERNEL_BRANCH : "HOS4-A17"
 
   CLANG_SOURCE: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz"
   CLANG_BRANCH : ""
@@ -26,7 +26,7 @@ env:
   GCC_32_BRANCH : "android12L-release"
 
   DEFCONFIG_SOURCE: ""
-  DEFCONFIG_NAME : "vendor/star_defconfig"
+  DEFCONFIG_NAME : "vendor/star1_defconfig"
   DEFCONFIG_ORIGIN_IMAGE: ""
   DEFCONFIG_FROM_BOOT: false
 
