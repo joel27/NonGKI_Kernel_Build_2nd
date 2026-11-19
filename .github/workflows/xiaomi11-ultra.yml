@@ -41,7 +41,7 @@ env:
 
   NOMOUNT_ENABLE: "true"
   FGETPRIORITY_ENABLE: "true"   # ocultar getpriority (ver nota en el informe: comprobar que quedó en el .config)
-  VPNHIDE_ENABLE: "false"        # ocultar el estado de VPN
+  VPNHIDE_ENABLE: "true"        # ocultar el estado de VPN
 
   AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
   AK3_BRANCH : "master"
