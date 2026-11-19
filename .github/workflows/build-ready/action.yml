@@ -160,7 +160,7 @@ runs:
                 fi
 
             elif [[ "${{ env.KERNELSU_AUTO_FORK }}" == "bakasu" ]]; then
-                KERNELSU_AUTHOR="Baka-SU"
+                KERNELSU_AUTHOR="joel27"
                 KERNELSU_NAME="BakaSU"
                 KERNELSU_ORIGIN_BRANCH="main"
                 if [[ "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
