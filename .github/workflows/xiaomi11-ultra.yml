@@ -1,0 +1,388 @@
+name: Xiaomi 11U — Resukisu
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  # Device env
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  DEVICE_NAME : "xiaomi_11U"
+  DEVICE_CODENAME : "star"
+
+  CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-gnu-"
+  EXTRA_CMDS : 'LD=ld.lld LLVM=1 LLVM_IAS=1 EXTRA_CFLAGS="-Wno-unused-function -Wno-frame-larger-than"'
+
+  KERNEL_SOURCE : "https://github.com/joel27/android_kernel_xiaomi_sm8350-miui.git"
+  KERNEL_BRANCH : "Hyper-F17"
+
+  CLANG_SOURCE: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz"
+  CLANG_BRANCH : ""
+
+  GCC_GNU : false
+  GCC_64_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9.git"
+  GCC_64_BRANCH : "android12L-release"
+  GCC_32_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9.git"
+  GCC_32_BRANCH : "android12L-release"
+
+  DEFCONFIG_SOURCE: ""
+  DEFCONFIG_NAME : "vendor/star1_defconfig"
+  DEFCONFIG_ORIGIN_IMAGE: ""
+  DEFCONFIG_FROM_BOOT: false
+
+  KERNELSU_SOURCE : ""
+  KERNELSU_BRANCH : ""
+
+  KERNELSU_AUTO_GET : "true"
+  KERNELSU_AUTO_FORK : "bakasu"
+
+  SUSFS_ENABLE : true
+  SUSFS_FIXED : true
+
+  NOMOUNT_ENABLE: "true"
+  FGETPRIORITY_ENABLE: "true"   # ocultar getpriority (ver nota en el informe: comprobar que quedó en el .config)
+  VPNHIDE_ENABLE: "false"        # ocultar el estado de VPN
+
+  AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
+  AK3_BRANCH : "master"
+
+  BOOT_SOURCE : ""
+  NEED_DTBO : false
+  NEED_SAFE_DTBO : false
+  ROM_TEXT : "Kernel-ReSukiSU"
+
+  PYTHON_VERSION: "3"
+  PACK_METHOD: "AnyKernel3"
+  PACK_KMODULES: "false"
+
+  KERNELSU_METHOD: "shell"
+  KERNELSU_SUS_PATCH: "false"
+
+  PATCHES_SOURCE: "joel27/NonGKI_Kernel_Patches"
+  PATCHES_BRANCH: "mi_kernel"
+
+  SUSFS_FOLDER_FIXED: "mi11_evox_a16"
+  SUSFS_PATCH_FIXED: "susfs_fixed"
+
+  REKERNEL_ENABLE: "false"
+  DROIDSPACES_ENABLE: "false"
+  HOOK_METHOD: "syscall"
+  KERNEL_PATCH: "false"
+
+  KPM_ENABLE: "false"
+  KPM_INLINE: "false"
+  KPM_KPATCH_NEXT: "false"
+  KPM_PATCH_SOURCE: "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/refs/heads/main/kpm/patch_linux"
+
+  BASEBAND_GUARD_ENABLE: "false"
+  BASEBAND_GUARD_BOOT: "false"
+
+  GENERATE_DTB: "false"
+  GENERATE_CHIP: "qcom"
+
+  BUILD_DEBUGGER: "false"
+  SKIP_PATCH: "false"
+  
+  BUILD_OTHER_CONFIG: "true"
+  MERGE_CONFIG_FILES: "vendor/star_QGKI.config,vendor/xiaomi_QGKI.config"
+  
+  FREE_MORE_SPACE: "false"
+
+jobs:
+  build-kernel:
+    name: Xiaomi11U (Resukisu)
+    runs-on: ubuntu-24.04
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+
+    steps:
+      - name: ⏱️ Marcar hora de inicio
+        shell: bash
+        run: |
+          echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+          echo "START_UTC=$(date -u '+%F %T')" >> "$GITHUB_ENV"
+
+      - name: ⏰ Checkout repository
+        id: checkout
+        uses: actions/checkout@v6
+
+      - name: ⌛️ Compilation environment preparation
+        id: env
+        uses: ./.github/workflows/build-env
+
+      - name: ⚙️ Get necessary tools
+        id: ready
+        uses: ./.github/workflows/build-ready
+
+      - name: 🪝 Patch Kernel of SUSFS
+        id: susfs
+        uses: ./.github/workflows/patch-susfs
+
+      - name: 🔗 Patch for no-kprobe
+        id: nokprobe
+        uses: ./.github/workflows/patch-no-kprobe
+
+      - name: 🪛 Extra Kernel Options
+        id: extra
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          echo "KBUILD_BUILD_TIMESTAMP=Fri Nov 14 08:26:51 UTC 2025" >> $GITHUB_ENV
+
+      - name: 🧰 Patch Kernel of Re:Kernel
+        id: rekernel
+        uses: ./.github/workflows/patch-rekernel
+
+      - name: 💿 Patch Kernel of Droidspaces
+        id: droid
+        uses: ./.github/workflows/patch-droidspaces
+
+      - name: 🔒 Patch Kernel of Baseband Guard
+        id: baseband
+        uses: ./.github/workflows/patch-baseband-guard
+
+      - name: 🚫 Patch NoMount
+        id: nomount
+        uses: ./.github/workflows/patch-nomount
+
+      - name: ⛔ Patch Kernel of fgetpriority
+        id: fgetpriority
+        uses: ./.github/workflows/patch-fgetpriority
+
+      - name: 🛜 Patch Kernel of VPNHide
+        id: vpnhide
+        uses: ./.github/workflows/patch-vpnhide
+
+      - name: 🩹 Patch Stock Config (fix mensaje HyperOS)
+        id: stock
+        uses: ./.github/workflows/patch-stock-config
+
+      - name: 🚀 Build Process
+        id: build
+        uses: ./.github/workflows/build-process
+
+      - name: 📦 Package AnyKernel3 Flash Zip
+        id: pack
+        if: env.PACK_METHOD == 'AnyKernel3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TIME=$(date +"%Y%m%d%H%M%S")
+          KERNEL_DIR="${GITHUB_WORKSPACE}/device_kernel"
+          TMP_DIR="${KERNEL_DIR}/tmp"
+          IMG_PATH="${KERNEL_DIR}/out/arch/arm64/boot/Image"
+          cd "${KERNEL_DIR}"
+          if [[ ! -f "${IMG_PATH}" ]]; then
+            echo "::error::❌ Build failed, Image not found"
+            exit 1
+          fi
+          IMG_SIZE=$(du -h "${IMG_PATH}" | awk '{print $1}')
+          echo "✅ Kernel image detected | Size: ${IMG_SIZE}"
+          rm -rf "${TMP_DIR}"
+          mkdir -p "${TMP_DIR}"
+
+          AK3_DIR="${KERNEL_DIR}/AnyKernel3"
+          if [[ ! -d "${AK3_DIR}" ]]; then
+            echo "::error::❌ AnyKernel3 not found in ${AK3_DIR}"
+            exit 1
+          fi
+          if [[ -d "${AK3_DIR}" ]]; then
+            curl -fsSL --retry 3 https://raw.githubusercontent.com/joel27/NonGKI_Kernel_Build_2nd/mainline/Patches/anykernel.sh -o "${AK3_DIR}/anykernel.sh"
+            chmod +x "${AK3_DIR}/anykernel.sh"
+            sed -i \
+              -e 's/^name=.*/name="11U-Resukisu"/' \
+              -e 's/^do\.devicecheck=.*/do.devicecheck=0/' \
+              -e 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=1/' \
+              -e 's/^BLOCK=.*/BLOCK=boot/' \
+              "${AK3_DIR}/anykernel.sh"
+          fi
+
+          cp -v "${IMG_PATH}" "${TMP_DIR}/Image"
+          if [[ "${{ env.PACK_KMODULES }}" == "true" ]]; then
+            MOD_DIR="${TMP_DIR}/modules/vendor/lib/modules"
+            mkdir -p "${MOD_DIR}"
+            find . -name "*.ko" -type f -print0 | xargs -0 cp -t "${MOD_DIR}/" 2>/dev/null || true
+            module_count=$(find "${MOD_DIR}" -name "*.ko" | wc -l)
+            [[ ${module_count} -eq 0 ]] && rm -rf "${TMP_DIR}/modules"
+          fi
+          [[ -d "${AK3_DIR}" ]] && cp -rp "${AK3_DIR}"/* "${TMP_DIR}/"
+          cd "${TMP_DIR}"
+          7za a -tzip -mx9 -mmt=on package.zip ./* >/dev/null
+          cd "${GITHUB_WORKSPACE}"
+
+          FINAL_ZIP="Kernel-Resukisu-TechMaster-11U-${TIME}.zip"
+          cp -fp "${TMP_DIR}/package.zip" "${FINAL_ZIP}"
+          echo "PACK_NAME=${FINAL_ZIP}" >> "${GITHUB_ENV}"
+          echo "✅ Zip generado: ${FINAL_ZIP}"
+          rm -rf "${TMP_DIR}"
+
+      - name: 🚀 Upload Artifact to Actions
+        id: upload
+        uses: actions/upload-artifact@v7
+        if: env.PACK_METHOD == 'AnyKernel3'
+        with:
+          name: Star-Kernel-Resukisu-Tech
+          path: ${{ env.PACK_NAME }}
+          compression-level: 0
+    # --- INFORME DE COMPILACIÓN: se genera SIEMPRE (éxito, fallo o cancelación) ---
+      - name: 📝 Informe de compilación (éxito o fallo)
+        id: report
+        if: ${{ always() }}
+        shell: bash {0}   # sin -e: nada debe cortar la creación del informe
+        env:
+          JOB_STATUS: ${{ job.status }}
+          O_CHECKOUT: ${{ steps.checkout.outcome }}
+          O_ENV: ${{ steps.env.outcome }}
+          O_READY: ${{ steps.ready.outcome }}
+          O_SUSFS: ${{ steps.susfs.outcome }}
+          O_NOKPROBE: ${{ steps.nokprobe.outcome }}
+          O_EXTRA: ${{ steps.extra.outcome }}
+          O_REKERNEL: ${{ steps.rekernel.outcome }}
+          O_DROID: ${{ steps.droid.outcome }}
+          O_BASEBAND: ${{ steps.baseband.outcome }}
+          O_NOMOUNT: ${{ steps.nomount.outcome }}
+          O_FGETPRIORITY: ${{ steps.fgetpriority.outcome }}
+          O_VPNHIDE: ${{ steps.vpnhide.outcome }}
+          O_STOCK: ${{ steps.stock.outcome }}
+          O_BUILD: ${{ steps.build.outcome }}
+          O_PACK: ${{ steps.pack.outcome }}
+          O_UPLOAD: ${{ steps.upload.outcome }}
+        run: |
+          K="$GITHUB_WORKSPACE/device_kernel"
+          R="$GITHUB_WORKSPACE/build-report.txt"
+          B=""
+          for c in "$K/build_full.log" "$K/build.log" "$K/out/build.log" "$GITHUB_WORKSPACE/build_full.log"; do
+            if [ -f "$c" ]; then B="$c"; break; fi
+          done
+          case "$JOB_STATUS" in
+            success)   RES="✅ ÉXITO" ;;
+            cancelled) RES="⏹️ CANCELADO" ;;
+            *)         RES="❌ FALLO" ;;
+          esac
+          NOW=$(date +%s); DUR=$(( NOW - ${T0:-$NOW} ))
+          REL=""
+          if [ -f "$K/out/include/generated/utsrelease.h" ]; then
+            REL=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' "$K/out/include/generated/utsrelease.h")
+          fi
+          {
+            echo "===== Xiaomi 11U (Resukisu): informe de compilación ====="
+            echo "Resultado: $RES"
+            echo "Inicio (UTC): ${START_UTC:-n/d} | fin (UTC): $(date -u '+%F %T') | duración: $((DUR/60)) min $((DUR%60)) s"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (intento $GITHUB_RUN_ATTEMPT)"
+            echo "Kernel: $KERNEL_SOURCE @ $KERNEL_BRANCH | commit: $(git -C "$K" log -1 --format='%h %s' 2>/dev/null || echo n/d)"
+            echo "Defconfig: $DEFCONFIG_NAME | merge de configs: $BUILD_OTHER_CONFIG"
+            echo "Versión del kernel compilado: ${REL:-(no se llegó a generar)}"
+            case "$REL" in *-dirty*) echo "AVISO: la versión lleva -dirty";; esac
+            case "$REL" in *+) echo "AVISO: la versión termina en + (el árbol quedó modificado por los parches)";; esac
+            CCV=$(grep -m1 '^CONFIG_CC_VERSION_TEXT=' "$K/out/.config" 2>/dev/null | cut -d= -f2- | tr -d '"')
+            echo "Compilador: ${CCV:-n/d} | origen: $CLANG_SOURCE"
+            echo
+            echo "--- Componentes ---"
+            if [ -d "$K/KernelSU" ]; then
+              echo "KernelSU: $(git -C "$K/KernelSU" log -1 --format='%h %s' 2>/dev/null)"
+            fi
+            if [ -f "$K/out/arch/arm64/boot/Image" ]; then
+              echo "KernelSU/BakaSU dentro de la Image: $(LC_ALL=C grep -aoE 'v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?-[0-9a-f]{8}' "$K/out/arch/arm64/boot/Image" | sort -u | head -n 3 | tr '\n' ' ')"
+            fi
+            if [ -f "$B" ]; then
+              grep -m1 '^-- BakaSU version name' "$B"
+              grep -m1 '^-- BakaSU version code' "$B"
+            fi
+            SV=$(sed -n 's/^#define SUSFS_VERSION "\(.*\)"/\1/p' "$K/include/linux/susfs.h" 2>/dev/null | head -n1)
+            echo "SUSFS: ${SV:-no presente} ($(grep -c '^CONFIG_KSU_SUSFS_[A-Z_]*=y' "$K/out/.config" 2>/dev/null) opciones activas)"
+            if [ -d "$K/NoMount" ]; then
+              echo "NoMount: $(git -C "$K/NoMount" describe --tags --always 2>/dev/null) | CONFIG_NOMOUNT: $(grep -c '^CONFIG_NOMOUNT=[ym]' "$K/out/.config" 2>/dev/null)"
+            else
+              echo "NoMount: no integrado"
+            fi
+            echo
+            echo "--- Resultado por paso ---"
+            culprit=""
+            for s in CHECKOUT ENV READY SUSFS NOKPROBE EXTRA REKERNEL DROID BASEBAND NOMOUNT FGETPRIORITY VPNHIDE STOCK BUILD PACK UPLOAD; do
+              v="O_$s"
+              printf '%-9s %s\n' "$s" "${!v}"
+              if [ -z "$culprit" ] && [ "${!v}" = "failure" ]; then culprit="$s"; fi
+            done
+            [ "$JOB_STATUS" = "success" ] || echo "Primer paso con fallo: ${culprit:-(cancelado o sin determinar)}"
+            echo
+            echo "--- Configuración relevante (.config) ---"
+            if [ -f "$K/out/.config" ]; then
+              grep -E '^(# )?CONFIG_(KSU|LTO_CLANG|LTO_NONE|CFI_CLANG|HEADERS_INSTALL|LOCALVERSION=)|NOMOUNT' "$K/out/.config" | head -n 40
+            else
+              echo "(no se llegó a generar .config)"
+            fi
+            echo
+            echo "--- Opciones opcionales (pedido en el workflow frente a lo que quedó en el .config) ---"
+            for pair in "FGETPRIORITY:$FGETPRIORITY_ENABLE" "VPNHIDE:$VPNHIDE_ENABLE" "NOMOUNT:$NOMOUNT_ENABLE"; do
+              sym=${pair%%:*}; want=${pair#*:}
+              have=$(grep -c "^CONFIG_${sym}=[ym]" "$K/out/.config" 2>/dev/null)
+              echo "$sym: pedido=$want | en .config=$([ "${have:-0}" -gt 0 ] && echo sí || echo no)"
+              if [ "$want" = "true" ] && [ "${have:-0}" = "0" ]; then
+                echo "AVISO: $sym está activado en el workflow pero NO quedó en el .config (la acción pudo omitirse)"
+              fi
+            done
+            echo
+            echo "--- Compilación ---"
+            if [ -f "$B" ]; then
+              echo "warnings: $(grep -c ' warning: ' "$B")  | errores: $(grep -c -E ' error: |\*\*\* ' "$B")"
+              echo "Warnings por tipo (top 12):"
+              grep ' warning: ' "$B" | sed -nE 's/.*\[(-W[A-Za-z0-9=_+-]+)\]$/\1/p' | sort | uniq -c | sort -rn | head -n 12
+            else
+              echo "(no se encontró el log de compilación en las rutas habituales; logs presentes en el workspace:)"
+              find "$GITHUB_WORKSPACE" -maxdepth 3 -name '*.log' -not -path '*/out/*' 2>/dev/null | head -n 15
+            fi
+            echo
+            if [ -f "$K/out/arch/arm64/boot/Image" ]; then
+              echo "Image: $(stat -c %s "$K/out/arch/arm64/boot/Image") bytes"
+            fi
+            if [ -n "$PACK_NAME" ] && [ -f "$GITHUB_WORKSPACE/$PACK_NAME" ]; then
+              echo "ZIP: $PACK_NAME | $(stat -c %s "$GITHUB_WORKSPACE/$PACK_NAME") bytes"
+              echo "sha256: $(sha256sum "$GITHUB_WORKSPACE/$PACK_NAME" | cut -d' ' -f1)"
+            fi
+            if [ "$JOB_STATUS" != "success" ]; then
+              echo
+              echo "--- Errores detectados (máx. 60) ---"
+              if [ -f "$B" ]; then
+                grep -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error|no space left|cannot allocate memory|Hunk #[0-9]+ FAILED|rejects? |can.t find|permission denied' "$B" | grep -v 'No such file or directory' | head -n 60
+                echo
+                echo "--- Final del log (120 líneas) ---"
+                tail -n 120 "$B"
+              else
+                echo "(no hay log de compilación: el fallo ocurrió antes de compilar o el log está en otra ruta; mira el paso indicado arriba)"
+              fi
+              echo
+              echo "--- Archivos .rej (parches rechazados) ---"
+              find "$K" -name '*.rej' -not -path '*/out/*' 2>/dev/null | head -n 30
+            fi
+            echo
+            echo "--- Recursos del runner ---"
+            df -h / | tail -n 2
+            free -h | head -n 2
+          } > "$R" 2>&1
+
+          {
+            echo "### $RES · Xiaomi 11U (Resukisu)"
+            echo
+            echo '```'
+            head -n 90 "$R"
+            echo '```'
+            echo "Informe completo en el artifact **Star-Kernel-Resukisu-Report-$GITHUB_RUN_NUMBER**."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📤 Subir informe de compilación
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: Star-Kernel-Resukisu-Report-${{ github.run_number }}
+          path: build-report.txt
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: 📝 Upload Build Log Artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Kernel-Compilation-Full-Log
+          path: device_kernel/build_full.log
+          if-no-files-found: ignore

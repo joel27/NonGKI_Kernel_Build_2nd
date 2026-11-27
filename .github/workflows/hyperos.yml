@@ -1,0 +1,888 @@
+name: Build Xiaomi11U (HyperOS Modern)
+run-name: "HyperOS star · ${{ inputs.root_mode }} · ${{ inputs.kernel_ref }} · ${{ inputs.defconfig }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_ref:
+        description: "Rama o tag del repo HyperOS"
+        type: string
+        default: "HOS4-A17"
+      defconfig:
+        description: "Defconfig (ruta dentro de arch/arm64/configs)"
+        type: string
+        default: "vendor/star_defconfig"
+      root_mode:
+        description: "Tipo de kernel: KSU-Susfs (BakaSU + SUSFS) / KSU (BakaSU sin SUSFS) / Vanilla (sin root)"
+        type: choice
+        options:
+          - KSU-Susfs
+          - KSU
+          - Vanilla
+        default: KSU-Susfs
+      merge_qgki:
+        description: "Mezclar star_QGKI.config y xiaomi_QGKI.config sobre el defconfig"
+        type: boolean
+        default: false
+      lite_build:
+        description: "Compilar ligero (sin LTO/CFI)"
+        type: boolean
+        default: true
+      ksu_latest:
+        description: "Mover KernelSU (BakaSU) al último commit de su rama principal (si no, el commit fijado)"
+        type: boolean
+        default: true
+      nomount:
+        description: "Integrar NoMount (setup.sh de maxsteeel/nomount)"
+        type: boolean
+        default: true
+      nomount_ref:
+        description: "Tag, rama o commit de NoMount (vacío = último tag)"
+        type: string
+        default: ""
+      nomount_required:
+        description: "Fallar si NoMount no se aplica limpio (si no, se compila sin él)"
+        type: boolean
+        default: false
+      headers_preinit:
+        description: "Generar headers UAPI antes de compilar (para el preinit de BakaSU)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+  KERNEL_REPO: "joel27/android_kernel_xiaomi_sm8350-hyperos"
+  CLANG_URL: "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz"
+  ZIP_PREFIX: "Kernel-HyperOS-TechMaster-11U"
+  REQUIRE_KSU: "true"
+
+  NOMOUNT_SETUP_URL: "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh"
+
+  # Archivos que se mezclan sobre el defconfig cuando merge_qgki=true (rutas dentro de arch/arm64/configs)
+  MERGE_CONFIG_FILES: "vendor/star_QGKI.config,vendor/xiaomi_QGKI.config"
+
+  # Opciones de root según el input root_mode (siempre sin hooks de tracepoint, para evitar errores GKI)
+  # KSU-Susfs: BakaSU con SUSFS (hooks inline)
+  KSU_OPTS_SUSFS: >-
+    -e KSU -d KSU_TRACEPOINT_HOOK -d KSU_MANUAL_HOOK
+    -e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT
+    -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP
+    -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+    -e KSU_SUSFS_ENABLE_LOG
+  # KSU: BakaSU sin SUSFS (hooks manuales)
+  KSU_OPTS_KSU: >-
+    -e KSU -d KSU_TRACEPOINT_HOOK -e KSU_MANUAL_HOOK
+    -d KSU_SUSFS -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_MOUNT -d KSU_SUSFS_SUS_KSTAT
+    -d KSU_SUSFS_SPOOF_UNAME -d KSU_SUSFS_OPEN_REDIRECT -d KSU_SUSFS_SUS_MAP
+    -d KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+    -d KSU_SUSFS_ENABLE_LOG
+  # Vanilla: sin KernelSU ni SUSFS
+  KSU_OPTS_VANILLA: >-
+    -d KSU -d KSU_TRACEPOINT_HOOK -d KSU_MANUAL_HOOK
+    -d KSU_SUSFS -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_MOUNT -d KSU_SUSFS_SUS_KSTAT
+    -d KSU_SUSFS_SPOOF_UNAME -d KSU_SUSFS_OPEN_REDIRECT -d KSU_SUSFS_SUS_MAP
+    -d KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+    -d KSU_SUSFS_ENABLE_LOG
+
+  # Variables de compilación make con herramientas LLVM explícitas
+  ARCH: arm64
+  LLVM: "1"
+  LLVM_IAS: "1"
+  LD: ld.lld
+  AR: llvm-ar
+  NM: llvm-nm
+  OBJCOPY: llvm-objcopy
+  OBJDUMP: llvm-objdump
+  STRIP: llvm-strip
+  CLANG_TRIPLE: aarch64-linux-gnu-
+  CROSS_COMPILE: aarch64-linux-gnu-
+  CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+  
+  KCFLAGS: >-
+    -Wno-error -Wno-frame-larger-than -Wno-strict-prototypes -Wno-align-mismatch
+    -Wno-unused-function -Wno-unused-variable -Wno-unused-result -Wno-unused-label
+    -Wno-compare-distinct-pointer-types -Wno-void-pointer-to-int-cast -Wno-array-parameter
+    -Wno-declaration-after-statement -Wno-sometimes-uninitialized -Wno-misleading-indentation
+    -Wno-fortify-source -Wno-macro-redefined
+
+  CLANG_DIR: "${{ github.workspace }}/clang"
+  CCACHE_BIN: "${{ github.workspace }}/ccache-bin"
+  LOG_DIR: "${{ github.workspace }}/logs"
+  CCACHE_DIR: "${{ github.workspace }}/.ccache"
+  CCACHE_MAXSIZE: "3G"
+  CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+  CCACHE_NOHASHDIR: "true"
+  CCACHE_HARDLINK: "true"
+
+jobs:
+  build-kernel:
+    name: HyperOS star (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    env:
+      KERNEL_REF: "${{ inputs.kernel_ref }}"
+      DEFCONFIG: "${{ inputs.defconfig }}"
+      LITE_BUILD: "${{ inputs.lite_build }}"
+      ROOT_MODE: "${{ inputs.root_mode }}"
+      BUILD_OTHER_CONFIG: "${{ inputs.merge_qgki }}"
+
+    steps:
+      - name: ⏱️ Marcar inicio
+        shell: bash
+        run: echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: 📥 Descargar kernel HyperOS
+        id: checkout
+        uses: actions/checkout@v6
+        with:
+          repository: "${{ env.KERNEL_REPO }}"
+          ref: "${{ inputs.kernel_ref }}"
+          path: "kernel"
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: 🔎 Revisar y actualizar KernelSU (BakaSU)
+        id: ksu
+        if: ${{ inputs.root_mode != 'Vanilla' }}
+        shell: bash
+        env:
+          KSU_LATEST: "${{ inputs.ksu_latest }}"
+        run: |
+          mkdir -p "$LOG_DIR"
+          cd kernel
+          {
+            echo "--- Submódulos fijados en el repo (commit que baja 'submodules: recursive') ---"
+            git submodule status --recursive || true
+            echo "--- drivers/kernelsu (lo que realmente compila el kernel) ---"
+            ls -ld drivers/kernelsu 2>&1 || true
+            KSU_TOP=""
+            if [ -e drivers/kernelsu ]; then
+              KSU_TOP=$(git -C "$(readlink -f drivers/kernelsu)" rev-parse --show-toplevel 2>/dev/null || true)
+            fi
+            if [ -z "$KSU_TOP" ] || [ "$KSU_TOP" = "$(pwd -P)" ]; then
+              echo "::warning::drivers/kernelsu no apunta a un submódulo: no se puede revisar/actualizar KernelSU"
+            else
+              echo "KSU_TOP=$KSU_TOP" >> "$GITHUB_ENV"
+              old=$(git -C "$KSU_TOP" rev-parse --short=8 HEAD)
+              echo "KernelSU en uso: ${KSU_TOP#$(pwd -P)/} @ $old"
+              # Historial completo y tags SIEMPRE: BakaSU calcula su versión con git (tag + nº de commits).
+              # Con el clon superficial de actions/checkout salía "v4.1.0 (30701)" en vez de "v4.2.0-rcN".
+              git -C "$KSU_TOP" fetch --unshallow --tags origin 2>/dev/null || git -C "$KSU_TOP" fetch --tags origin
+              echo "versión por git describe: $(git -C "$KSU_TOP" describe --tags 2>/dev/null || echo n/d)"
+              if [ "$KSU_LATEST" = "true" ]; then
+                git -C "$KSU_TOP" fetch origin HEAD
+                git -C "$KSU_TOP" checkout -q FETCH_HEAD
+                new=$(git -C "$KSU_TOP" rev-parse --short=8 HEAD)
+                echo "KernelSU actualizado: $old -> $new"
+                git -C "$KSU_TOP" log --oneline -n 8 || true
+              else
+                echo "ksu_latest=false: se compila el commit fijado ($old)"
+              fi
+            fi
+          } 2>&1 | tee "$LOG_DIR/ksu.log"
+
+      - name: ⌛ Preparar entorno y Clang 16
+        id: setup
+        shell: bash
+        run: |
+          mkdir -p "$LOG_DIR" "$CLANG_DIR" "$CCACHE_BIN"
+          {
+            sudo apt-get update -q
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
+              bc bison flex libelf-dev libssl-dev libncurses-dev make python3 \
+              device-tree-compiler git curl xz-utils ccache zip unzip zstd p7zip-full
+            curl -fL --retry 3 --retry-delay 5 -o /tmp/clang.tgz "$CLANG_URL"
+            tar -xf /tmp/clang.tgz -C "$CLANG_DIR"
+            rm -f /tmp/clang.tgz
+            found=$(find "$CLANG_DIR" -maxdepth 3 -path '*/bin/clang' -print -quit)
+            if [ -z "$found" ]; then
+              echo "::error::No encuentro bin/clang dentro del tarball descargado"
+              ls -la "$CLANG_DIR" | head -n 20
+              exit 1
+            fi
+            CLANG_DIR=$(dirname "$(dirname "$found")")
+            echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
+            if ! "$CLANG_DIR/bin/clang" --version > /tmp/clang.ver 2>&1; then
+              echo "::error::El clang descargado no arranca: $(head -n1 /tmp/clang.ver)"
+              echo "Librerías que le faltan:"
+              ldd "$CLANG_DIR/bin/clang" 2>&1 | grep -i 'not found' || true
+              exit 1
+            fi
+            head -n1 /tmp/clang.ver
+            for t in ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+              if [ ! -x "$CLANG_DIR/bin/$t" ]; then echo "::warning::Falta $t en $CLANG_DIR/bin"; fi
+            done
+            ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang"
+            ln -sf "$(command -v ccache)" "$CCACHE_BIN/clang++"
+          } 2>&1 | tee "$LOG_DIR/setup.log"
+
+      - name: 🚫 Integrar NoMount (setup.sh de maxsteeel)
+        id: nomount
+        if: ${{ inputs.nomount }}
+        continue-on-error: true
+        shell: bash
+        env:
+          NOMOUNT_REF: "${{ inputs.nomount_ref }}"
+        run: |
+          mkdir -p "$LOG_DIR"
+          cd kernel
+          {
+            curl -fsSL --retry 3 "$NOMOUNT_SETUP_URL" -o /tmp/nomount-setup.sh
+            # Sin argumento: último tag. Con argumento: ese tag/rama/commit.
+            if [ -n "$NOMOUNT_REF" ]; then sh /tmp/nomount-setup.sh "$NOMOUNT_REF"; else sh /tmp/nomount-setup.sh; fi
+            echo "--- Comprobación ---"
+            test -d NoMount/kernel/src || { echo "::error::No existe NoMount/kernel/src"; exit 1; }
+            test -f fs/nomount/Kconfig || { echo "::error::fs/nomount/Kconfig no existe (enlace roto)"; exit 1; }
+            grep -q 'nomount' fs/Makefile || { echo "::error::fs/Makefile sin la línea de NoMount"; exit 1; }
+            grep -q 'fs/nomount/Kconfig' fs/Kconfig || { echo "::error::fs/Kconfig sin el source de NoMount"; exit 1; }
+            echo "NoMount: $(git -C NoMount describe --tags --always 2>/dev/null) | enlace: $(readlink fs/nomount)"
+            echo "--- Símbolos de Kconfig de NoMount ---"
+            grep -hE '^(config|menuconfig)[[:space:]]|^[[:space:]]+depends on' fs/nomount/Kconfig | head -n 20
+          } 2>&1 | tee "$LOG_DIR/nomount.log"
+
+      - name: 🛡️ Verificar NoMount (revertir si quedó a medias)
+        id: nomount_check
+        if: ${{ inputs.nomount }}
+        shell: bash
+        env:
+          NM_OUTCOME: "${{ steps.nomount.outcome }}"
+          NM_REQUIRED: "${{ inputs.nomount_required }}"
+        run: |
+          mkdir -p "$LOG_DIR"
+          cd kernel
+          {
+            rej=$(find . -path ./out -prune -o \( -name '*.rej' -o -name '*.orig' \) -print | head -n 50)
+            echo "Resultado de la integración NoMount: $NM_OUTCOME"
+            echo "--- Cambios en el árbol ---"
+            git status --short | head -n 40
+            bad=0
+            [ "$NM_OUTCOME" = "success" ] || bad=1
+            if [ -n "$rej" ]; then bad=1; echo "--- Rechazos de parche (.rej/.orig) ---"; echo "$rej"; fi
+            if [ "$bad" = "1" ]; then
+              echo "::warning::NoMount no quedó integrado (resultado: $NM_OUTCOME)"
+              if [ "$NM_REQUIRED" = "true" ]; then
+                echo "::error::NoMount es obligatorio (nomount_required=true)"
+                exit 1
+              fi
+              echo "Se revierte el árbol para compilar SIN NoMount (el submódulo de KernelSU no se toca)"
+              git reset -q --hard HEAD
+              git clean -fdq
+              echo "NOMOUNT_APPLIED=false" >> "$GITHUB_ENV"
+            else
+              echo "NoMount integrado"
+              echo "NOMOUNT_APPLIED=true" >> "$GITHUB_ENV"
+            fi
+          } 2>&1 | tee -a "$LOG_DIR/nomount.log"
+
+      - name: ♻️ Restaurar caché de ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: "${{ env.CCACHE_DIR }}"
+          key: "ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          restore-keys: |
+            ccache-hyperos-u24-${{ runner.os }}-
+
+      - name: 🩹 Preparar defconfig y compatibilidad
+        id: prep
+        shell: bash
+        run: |
+          {
+            DEF="kernel/arch/arm64/configs/${DEFCONFIG}"
+            if [ ! -f "$DEF" ]; then
+              echo "::error::No existe $DEF"
+              echo "Defconfigs 'star' que sí hay en el repo:"
+              find kernel/arch/arm64/configs -iname '*star*' | sed 's|^kernel/arch/arm64/configs/||'
+              exit 1
+            fi
+            if grep -qP '^[^\x00-\x7F]+(?=CONFIG_)' "$DEF"; then
+              echo "::warning::$DEFCONFIG tiene caracteres raros antes de CONFIG_ (p. ej. un '（'); los quito en CI, corrígelo también en el repo"
+              perl -pi -e 's/^[^\x00-\x7F]+(?=CONFIG_)//' "$DEF"
+            fi
+            if grep -qE '^CONFIG_[A-Za-z0-9_]+ is not set$' "$DEF"; then
+              echo "::warning::$DEFCONFIG tiene líneas 'is not set' sin '# '; las corrijo en CI"
+              sed -i -E 's/^(CONFIG_[A-Za-z0-9_]+) is not set$/# \1 is not set/' "$DEF"
+            fi
+
+            # ¿Fuentes rotas (#if/#endif descuadrados)? Avisa antes de gastar una compilación entera
+            for f in fs/notify/fdinfo.c kernel/kallsyms.c fs/proc/task_mmu.c fs/namespace.c fs/proc_namespace.c \
+                     fs/proc/base.c fs/readdir.c fs/stat.c fs/statfs.c fs/exec.c fs/open.c fs/namei.c kernel/sys.c; do
+              [ -f "kernel/$f" ] || continue
+              o=$(grep -cE '^[[:space:]]*#[[:space:]]*(if|ifdef|ifndef)([[:space:]]|\()' "kernel/$f" || true)
+              e=$(grep -cE '^[[:space:]]*#[[:space:]]*endif' "kernel/$f" || true)
+              if [ "$o" != "$e" ]; then
+                echo "::warning::kernel/$f tiene $o #if y $e #endif: el archivo viene roto en el repo"
+              fi
+            done
+          } 2>&1 | tee "$LOG_DIR/prep.log"
+
+      - name: ⚙️ Configurar kernel
+        id: config
+        shell: bash
+        run: |
+          export PATH="$CCACHE_BIN:$CLANG_DIR/bin:$PATH"
+          cd kernel
+          {
+            echo "clang: $(command -v clang) | $(clang --version | head -n1)"
+            make mrproper
+            # mrproper borra los *.i versionados (firmware de touchscreen Focaltech): se restauran para no ensuciar el árbol
+            n=$(git ls-files -d | wc -l)
+            if [ "$n" -gt 0 ]; then
+              echo "mrproper borró $n archivos versionados; se restauran:"
+              git ls-files -d | head -n 10
+              git ls-files -d -z | xargs -0 -r git checkout --
+            fi
+            # Merge opcional de los .config de Qualcomm/Xiaomi (equivale a: make O=out <defconfig> <archivo.config> ...)
+            MERGE_ARGS=""
+            if [ "$BUILD_OTHER_CONFIG" = "true" ]; then
+              for f in ${MERGE_CONFIG_FILES//,/ }; do
+                if [ -f "arch/arm64/configs/$f" ]; then
+                  MERGE_ARGS="$MERGE_ARGS $f"
+                else
+                  echo "::error::No existe arch/arm64/configs/$f"
+                  echo "Archivos .config disponibles:"
+                  find arch/arm64/configs -name '*.config' | sed 's|^arch/arm64/configs/||' | sort | head -n 30
+                  exit 1
+                fi
+              done
+              echo "Merge de configs sobre $DEFCONFIG:$MERGE_ARGS"
+            else
+              echo "Sin merge de configs QGKI (merge_qgki=false)"
+            fi
+            make O=out "$DEFCONFIG" $MERGE_ARGS
+            scripts/config --file out/.config -d HEADERS_INSTALL -d UAPI_HEADER_TEST
+            case "$ROOT_MODE" in
+              Vanilla) KOPTS="$KSU_OPTS_VANILLA" ;;
+              KSU)     KOPTS="$KSU_OPTS_KSU" ;;
+              *)       KOPTS="$KSU_OPTS_SUSFS" ;;
+            esac
+            echo "Modo de root: $ROOT_MODE"
+            scripts/config --file out/.config $KOPTS
+            if [ "${NOMOUNT_APPLIED:-false}" = "true" ]; then
+              if grep -RqE '^config[[:space:]]+NOMOUNT$' --include='Kconfig*' fs drivers kernel init security 2>/dev/null; then
+                scripts/config --file out/.config -e NOMOUNT
+                echo "NoMount: símbolo CONFIG_NOMOUNT activado"
+              fi
+            fi
+            if [ "$LITE_BUILD" = "true" ]; then
+              echo "Modo ligero: LTO y CFI desactivados"
+              scripts/config --file out/.config -e LTO_NONE -d LTO_CLANG -d CFI_CLANG -d CFI_PERMISSIVE
+            fi
+            make O=out olddefconfig
+            cp out/.config "$LOG_DIR/dotconfig.txt"
+
+            echo "--- KernelSU / SUSFS ---"
+            grep -E '^(# )?CONFIG_KSU' out/.config || true
+            echo "--- NoMount ---"
+            grep -iE 'nomount' out/.config || echo "(sin símbolos NOMOUNT en .config; aplicado=${NOMOUNT_APPLIED:-no})"
+            # Coherencia entre el .config final y el modo elegido
+            ksu_on=0;    if grep -qE '^CONFIG_KSU=[ym]$' out/.config; then ksu_on=1; fi
+            susfs_on=0;  if grep -q '^CONFIG_KSU_SUSFS=y$' out/.config; then susfs_on=1; fi
+            manual_on=0; if grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' out/.config; then manual_on=1; fi
+            trace_on=0;  if grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' out/.config; then trace_on=1; fi
+            bad=""
+            case "$ROOT_MODE" in
+              Vanilla)
+                [ "$ksu_on" = 0 ] || bad="KSU sigue activo en modo Vanilla" ;;
+              KSU)
+                { [ "$ksu_on" = 1 ] && [ "$susfs_on" = 0 ] && [ "$manual_on" = 1 ] && [ "$trace_on" = 0 ]; } \
+                  || bad="modo KSU requiere KSU=y y KSU_MANUAL_HOOK=y, sin SUSFS ni tracepoints (ksu=$ksu_on susfs=$susfs_on manual=$manual_on trace=$trace_on)" ;;
+              *)
+                { [ "$ksu_on" = 1 ] && [ "$susfs_on" = 1 ] && [ "$trace_on" = 0 ]; } \
+                  || bad="modo KSU-Susfs requiere KSU=y y KSU_SUSFS=y, sin tracepoints (ksu=$ksu_on susfs=$susfs_on trace=$trace_on)" ;;
+            esac
+            if [ -n "$bad" ]; then
+              echo "::warning::Config incoherente con el modo $ROOT_MODE: $bad"
+              if [ "$REQUIRE_KSU" = "true" ]; then
+                echo "::error::$bad (REQUIRE_KSU=true)"
+                exit 1
+              fi
+            fi
+          } 2>&1 | tee "$LOG_DIR/config.log"
+
+      - name: 🔧 Símbolos globales de SELinux (KernelSU)
+        id: selinux
+        if: ${{ inputs.root_mode != 'Vanilla' }}
+        shell: bash
+        run: |
+          cd kernel
+          {
+            # selinuxfs.c (my_write_context, my_sel_open_handle_status) usa fake_state y ksu_selinux_status_lock como
+            # símbolos externos, pero en el BakaSU de upstream están "static" en selinux_hide.c (tu workflow BakaSU los
+            # volvía globales con sed). Resultado: "ld.lld: error: undefined symbol: fake_state" al enlazar vmlinux.
+            # Paso idempotente: quita el "static" y, solo si el símbolo no existe en KernelSU, lo define.
+            echo "--- selinuxfs.c: referencias a los símbolos ---"
+            grep -n -E 'fake_state|ksu_selinux_status_lock' security/selinux/selinuxfs.c | head -n 12 || true
+
+            HIDE=$(find -L KernelSU drivers/kernelsu -name selinux_hide.c -print -quit 2>/dev/null || true)
+            echo "selinux_hide.c: ${HIDE:-(no existe)}"
+
+            KSU_FILES=""
+            for d in KernelSU drivers/kernelsu; do
+              if [ -d "$d" ]; then
+                KSU_FILES="$KSU_FILES $(grep -rlE '\b(fake_state|ksu_selinux_status_lock)\b' --include='*.c' "$d" 2>/dev/null || true)"
+              fi
+            done
+            KSU_FILES=$(for f in $KSU_FILES; do readlink -f "$f"; done | sort -u)
+
+            # 1) quitar "static" de las declaraciones de los dos símbolos
+            for f in $KSU_FILES; do
+              if grep -qE '^[[:space:]]*static[[:space:]][^;=(]*\b(fake_state|ksu_selinux_status_lock)\b' "$f"; then
+                echo "  quitando 'static' en ${f#$PWD/}"
+                sed -i -E 's/^([[:space:]]*)static[[:space:]]+([^;=(]*\b(fake_state|ksu_selinux_status_lock)\b)/\1\2/' "$f"
+              fi
+            done
+
+            # 2) ¿quedó cada símbolo definido (global) en algún .c de KernelSU?
+            have_fake=0; have_lock=0
+            for f in $KSU_FILES; do
+              if grep -qE '^struct[[:space:]]+selinux_state[[:space:]]+fake_state\b' "$f"; then have_fake=1; fi
+              if grep -qE '^struct[[:space:]]+mutex[[:space:]]*\*[[:space:]]*ksu_selinux_status_lock\b' "$f"; then have_lock=1; fi
+            done
+
+            inject() {   # uso: inject "<línea C>"  (la inserta tras el último #include de selinux_hide.c)
+              [ -n "$HIDE" ] || return 1
+              last=$(grep -n '^#include' "$HIDE" | tail -n1 | cut -d: -f1 || true)
+              last=${last:-1}
+              awk -v n="$last" -v add="$1" '{print} NR==n{print add}' "$HIDE" > "$HIDE.tmp" && mv "$HIDE.tmp" "$HIDE"
+            }
+            if [ "$have_fake" = 0 ]; then
+              if inject "struct selinux_state fake_state;"; then echo "  + definido fake_state en $HIDE"
+              else echo "::warning::fake_state no está definido en KernelSU y no hay selinux_hide.c donde ponerlo"; fi
+            fi
+            if [ "$have_lock" = 0 ]; then
+              if inject "struct mutex *ksu_selinux_status_lock = NULL;"; then echo "  + definido ksu_selinux_status_lock en $HIDE"
+              else echo "::warning::ksu_selinux_status_lock no está definido en KernelSU y no hay selinux_hide.c donde ponerlo"; fi
+            fi
+
+            echo "--- Definiciones/usos en KernelSU tras el arreglo ---"
+            for f in $KSU_FILES $HIDE; do
+              [ -f "$f" ] || continue
+              grep -n -E '\b(fake_state|ksu_selinux_status_lock)\b' "$f" | head -n 6 | sed "s|^|  $(basename "$f"):|" || true
+            done
+            echo "--- ¿Se compila selinux_hide? (referencias en Makefile/Kbuild) ---"
+            grep -rn 'selinux_hide' --include=Makefile --include=Kbuild --include='*.mk' KernelSU 2>/dev/null | head -n 5 || echo "  (sin referencias: si el enlace sigue fallando, selinux_hide.o no se está compilando)"
+          } 2>&1 | tee "$LOG_DIR/selinux.log"
+
+      - name: 🧩 Generar headers UAPI (para el preinit de BakaSU)
+        id: headers
+        if: ${{ inputs.headers_preinit && inputs.root_mode != 'Vanilla' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          export PATH="$CCACHE_BIN:$CLANG_DIR/bin:$PATH"
+          cd kernel
+          {
+            make -j"$(nproc)" O=out headers_install LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
+            if [ -d out/usr/include ]; then echo "out/usr/include listo"; else echo "::warning::out/usr/include no se generó"; fi
+          } 2>&1 | tee "$LOG_DIR/headers.log"
+
+      - name: 🏷️ Versión limpia (sin -dirty)
+        id: version
+        shell: bash
+        run: |
+          cd kernel
+          {
+            echo "--- Modificaciones hechas por el CI (quedan registradas aquí) ---"
+            echo "[kernel]"; git status --short -uno || true
+            git submodule foreach --quiet --recursive 'echo "[$displaypath]"; git status --short -uno || true'
+            # 1) submódulos (KernelSU): los archivos tocados por el CI no cuentan como "dirty" en la versión del driver
+            git submodule foreach --quiet --recursive 'git diff --name-only -z | xargs -0 -r git update-index --assume-unchanged --'
+            # 2) kernel: sufijo SCM fijo con el commit base y sin -dirty (setlocalversion lee .scmversion)
+            base=$(git rev-parse --short=7 HEAD)
+            printf '%s\n' "-g$base" > .scmversion
+            rm -f out/include/config/kernel.release out/include/generated/utsrelease.h
+            echo "Sufijo de versión fijado: -g$base"
+          } 2>&1 | tee "$LOG_DIR/version.log"
+
+      - name: 🚀 Compilar kernel
+        id: build
+        shell: bash
+        run: |
+          export PATH="$CCACHE_BIN:$CLANG_DIR/bin:$PATH"
+          cd kernel
+          {
+            ccache -z || true
+            rc=0
+            make -k -j"$(nproc)" O=out Image LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip || rc=$?
+            ccache -s || true
+            exit "$rc"
+          } 2>&1 | tee "$LOG_DIR/build.log"
+          test -s out/arch/arm64/boot/Image
+
+      - name: 📦 Empaquetar AnyKernel3 Dinámico
+        id: pack
+        shell: bash
+        run: |
+          {
+            IMG="kernel/out/arch/arm64/boot/Image"
+            KERNEL_DIR="${{ github.workspace }}/kernel"
+            AK3_DIR="${KERNEL_DIR}/AnyKernel3"
+            if [ ! -f "$IMG" ]; then
+              echo "::error::Image no encontrada en $IMG"
+              exit 1
+            fi
+            rm -rf "$AK3_DIR"
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$AK3_DIR"
+            case "$ROOT_MODE" in
+              Vanilla) TAG="Vanilla" ;;
+              KSU)     TAG="KSU" ;;
+              *)       TAG="KSU-Susfs" ;;
+            esac
+            # anykernel.sh propio: detecta KernelSU/SUSFS/NoMount mirando la imagen que se instala
+            cat > "${AK3_DIR}/anykernel.sh" <<'AK_EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+
+          ### AnyKernel setup
+          # global properties
+          properties() { '
+          kernel.string=Tech Kernel for Mi11 Ultra (Star) by Tech Master
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=star
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
+
+
+          ### AnyKernel install
+          ## boot files attributes
+          boot_attributes() {
+          set_perm_recursive 0 0 755 644 $RAMDISK/*;
+          set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+          } # end attributes
+
+          # boot shell variables
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
+          . tools/ak3-core.sh;
+          [ -n "$AKHOME" ] || AKHOME="${home:-$PWD}"; # AK3 antiguo usa $home
+
+          # ===== BEGIN ak_scan =====
+          # Analiza la imagen del kernel que se va a INSTALAR (la del zip, no la que ya hay en el
+          # dispositivo) y rellena:
+          #   AK_METHOD  = config | cadenas | ninguno
+          #   AK_KSU / AK_SUSFS / AK_NOMOUNT = 1 | 0
+          #   AK_RELEASE = versión del kernel (banner "Linux version")
+          #   AK_SUSFS_N = nº de opciones CONFIG_KSU_SUSFS_* activas (solo con método "config")
+          # Método "config": lee la .config que el propio kernel lleva embebida (CONFIG_IKCONFIG).
+          # Método "cadenas": si la imagen no trae su config (o el grep del recovery no soporta -b),
+          #                   busca cadenas características dentro del binario.
+          # Uso: ak_scan_kernel <imagen> [auto|config|cadenas]
+          ak_scan_kernel() {
+            _img="$1"; _mode="${2:-auto}";
+            AK_METHOD=ninguno; AK_KSU=0; AK_SUSFS=0; AK_NOMOUNT=0; AK_RELEASE=""; AK_SUSFS_N=0;
+            [ -f "$_img" ] || return 1;
+            _tmp="${TMPDIR:-/tmp}/ak_scan.$$"; mkdir -p "$_tmp" 2>/dev/null || _tmp=/tmp;
+            _raw="$_img";
+            # Image.gz / Image.gz-dtb: se descomprime para poder buscar dentro
+            if [ "$(head -c 2 "$_img" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
+              zcat "$_img" > "$_tmp/raw" 2>/dev/null || gzip -dc "$_img" > "$_tmp/raw" 2>/dev/null;
+              [ -s "$_tmp/raw" ] && _raw="$_tmp/raw";
+            fi;
+            AK_RELEASE=$(LC_ALL=C grep -a -m1 -o 'Linux version [^ ]*' "$_raw" 2>/dev/null | head -n1 | sed 's/^Linux version //');
+            if [ "$_mode" != "cadenas" ]; then
+              _off=$(LC_ALL=C grep -abo 'IKCFG_ST' "$_raw" 2>/dev/null | head -n1 | cut -d: -f1);
+              case "$_off" in ''|*[!0-9]*) _off="" ;; esac;
+              if [ -n "$_off" ]; then
+                tail -c +$((_off + 9)) "$_raw" 2>/dev/null | zcat > "$_tmp/config" 2>/dev/null;
+                if grep -q '^CONFIG_' "$_tmp/config" 2>/dev/null; then
+                  AK_METHOD=config;
+                  if grep -q '^CONFIG_KSU=[ym]' "$_tmp/config"; then AK_KSU=1; fi;
+                  if grep -q '^CONFIG_KSU_SUSFS=y' "$_tmp/config"; then AK_SUSFS=1; fi;
+                  if grep -q '^CONFIG_NOMOUNT=[ym]' "$_tmp/config"; then AK_NOMOUNT=1; fi;
+                  AK_SUSFS_N=$(grep -c '^CONFIG_KSU_SUSFS_[A-Z_]*=y' "$_tmp/config");
+                fi;
+              fi;
+            fi;
+            if [ "$AK_METHOD" = "ninguno" ] && [ "$_mode" != "config" ]; then
+              AK_METHOD=cadenas;
+              if LC_ALL=C grep -qaiE '/data/adb/ksud|kernelsu|bakasu|sukisu' "$_raw" 2>/dev/null; then AK_KSU=1; fi;
+              if LC_ALL=C grep -qai 'susfs' "$_raw" 2>/dev/null; then AK_SUSFS=1; fi;
+              if LC_ALL=C grep -qai 'nomount' "$_raw" 2>/dev/null; then AK_NOMOUNT=1; fi;
+            fi;
+            rm -rf "$_tmp" 2>/dev/null;
+            return 0;
+          }
+          # ===== END ak_scan =====
+
+          # Valor de kernel-info.txt (lo genera la compilación). Solo se usa si el hash de la imagen coincide.
+          ak_info() { sed -n "s/^$1=//p" "$AKHOME/kernel-info.txt" 2>/dev/null | head -n1; }
+
+          # Busca la imagen que trae el zip
+          ak_find_kernel() {
+            for _f in Image Image.gz Image.gz-dtb Image-dtb Image.lz4 zImage; do
+              if [ -f "$AKHOME/$_f" ]; then echo "$AKHOME/$_f"; return 0; fi;
+            done;
+            return 1;
+          }
+
+          ak_show_features() {
+            _k=$(ak_find_kernel) || { ui_print "- [!] No se encontró la imagen del kernel en el zip"; return 1; };
+            ui_print "- [*] Analizando la imagen del kernel a instalar...";
+            ak_scan_kernel "$_k";
+            if [ "$AK_METHOD" = "ninguno" ]; then
+              ui_print "- [!] No se pudo analizar la imagen";
+              return 1;
+            fi;
+            ui_print "- [i] Kernel: ${AK_RELEASE:-desconocido}";
+            if [ "$AK_METHOD" = "config" ]; then
+              ui_print "- [i] Detección: configuración embebida en la imagen";
+            else
+              ui_print "- [i] Detección: búsqueda de cadenas (la imagen no trae su config)";
+            fi;
+
+            # Nombres y versiones: solo si el manifiesto pertenece exactamente a esta imagen
+            _want=$(ak_info image_sha256); _have="";
+            if [ -n "$_want" ]; then _have=$(sha256sum "$_k" 2>/dev/null | cut -d' ' -f1); fi;
+            _verified=0; if [ -n "$_want" ] && [ "$_want" = "$_have" ]; then _verified=1; fi;
+
+            if [ "$AK_KSU" = 1 ]; then
+              _n=""; [ "$_verified" = 1 ] && _n=$(ak_info ksu_name);
+              ui_print "- [+] KernelSU detectado${_n:+ ($_n)}";
+            else
+              ui_print "- [-] KernelSU no detectado";
+            fi;
+            if [ "$AK_SUSFS" = 1 ]; then
+              _n=""; [ "$_verified" = 1 ] && _n=$(ak_info susfs_version);
+              _o=""; [ "$AK_SUSFS_N" -gt 0 ] 2>/dev/null && _o="$AK_SUSFS_N opciones";
+              _d="$_n"; [ -n "$_o" ] && _d="${_d:+$_d, }$_o";
+              ui_print "- [+] SUSFS detectado${_d:+ ($_d)}";
+            else
+              ui_print "- [-] SUSFS no detectado";
+            fi;
+            if [ "$AK_NOMOUNT" = 1 ]; then
+              _n=""; [ "$_verified" = 1 ] && _n=$(ak_info nomount_version);
+              ui_print "- [+] NoMount detectado${_n:+ ($_n)}";
+            else
+              ui_print "- [-] NoMount no detectado";
+            fi;
+            if [ -n "$_want" ] && [ "$_verified" = 0 ]; then
+              ui_print "- [!] kernel-info.txt no corresponde a esta imagen: se omiten nombres y versiones";
+            fi;
+          }
+
+          ui_print " " "- [+] Starting kernel image flashing...";
+
+          # boot install
+          ui_print "- [*] Unpacking boot image...";
+          dump_boot; # use split_boot to skip ramdisk unpack, e.g. for devices with init_boot ramdisk
+
+          ak_show_features;
+
+          ui_print "- [+] Flashing kernel image...";
+          write_boot; # use flash_boot to skip ramdisk repack, e.g. for devices with init_boot ramdisk
+          ## end boot install
+          AK_EOF
+            chmod +x "${AK3_DIR}/anykernel.sh"
+            cp -v "$IMG" "${AK3_DIR}/Image"
+
+            # kernel-info.txt: nombres y versiones reales de esta compilación.
+            # anykernel.sh solo los muestra si el sha256 de la Image del zip coincide con el de aquí.
+            {
+              echo "image_sha256=$(sha256sum "${AK3_DIR}/Image" | cut -d' ' -f1)"
+              echo "root_mode=$ROOT_MODE"
+              v=$(sed -n 's/^-- BakaSU version name: //p' "$LOG_DIR/build.log" 2>/dev/null | head -n1)
+              if [ -n "$v" ] && grep -q '^CONFIG_KSU=[ym]' kernel/out/.config; then echo "ksu_name=BakaSU $v"; fi
+              v=$(sed -n 's/^-- SUSFS_VERSION: //p' "$LOG_DIR/build.log" 2>/dev/null | head -n1)
+              if [ -n "$v" ] && grep -q '^CONFIG_KSU_SUSFS=y' kernel/out/.config; then echo "susfs_version=$v"; fi
+              if [ -d kernel/NoMount ] && grep -q '^CONFIG_NOMOUNT=[ym]' kernel/out/.config; then
+                echo "nomount_version=$(git -C kernel/NoMount describe --tags --always 2>/dev/null)"
+              fi
+            } > "${AK3_DIR}/kernel-info.txt"
+            echo "--- kernel-info.txt ---"; cat "${AK3_DIR}/kernel-info.txt"
+
+            # Autoprueba: la MISMA función que usará el zip, ejecutada sobre la Image real y comparada con el .config
+            echo "--- Autoprueba de detección sobre la Image ---"
+            sed -n '/^# ===== BEGIN ak_scan/,/^# ===== END ak_scan/p' "${AK3_DIR}/anykernel.sh" > /tmp/ak_scan.sh
+            exp_ksu=0;     if grep -q '^CONFIG_KSU=[ym]' kernel/out/.config; then exp_ksu=1; fi
+            exp_susfs=0;   if grep -q '^CONFIG_KSU_SUSFS=y' kernel/out/.config; then exp_susfs=1; fi
+            exp_nomount=0; if grep -q '^CONFIG_NOMOUNT=[ym]' kernel/out/.config; then exp_nomount=1; fi
+            echo "esperado según .config: ksu=$exp_ksu susfs=$exp_susfs nomount=$exp_nomount"
+            for m in config cadenas; do
+              (
+                set +e +o pipefail   # anykernel.sh corre sin -e en el recovery: se prueba igual
+                . /tmp/ak_scan.sh
+                ak_scan_kernel "${AK3_DIR}/Image" "$m"
+                res=OK
+                if [ "$AK_KSU" != "$exp_ksu" ] || [ "$AK_SUSFS" != "$exp_susfs" ] || [ "$AK_NOMOUNT" != "$exp_nomount" ]; then res=DIFERENCIA; fi
+                echo "método $m -> usado=$AK_METHOD ksu=$AK_KSU susfs=$AK_SUSFS nomount=$AK_NOMOUNT release=$AK_RELEASE => $res"
+                if [ "$res" != OK ]; then echo "::warning::La detección por '$m' no coincide con el .config (falta o sobra algún marcador)"; fi
+              )
+            done
+            echo "--- Muestra de cadenas reales en la Image (para afinar marcadores) ---"
+            (LC_ALL=C grep -aoiE '[ -~]{0,40}(susfs|nomount|kernelsu|bakasu|sukisu|ksud)[ -~]{0,40}' "${AK3_DIR}/Image" | sort | uniq -c | sort -rn | head -n 25) || true
+            echo "--- Ensayo de los mensajes que verás al flashear ---"
+            (
+              set +e +o pipefail
+              ui_print() { for a in "$@"; do echo "$a"; done; }
+              . /tmp/ak_scan.sh
+              sed -n '/^# Valor de kernel-info.txt/,/^ui_print " " "- \[+\] Starting/p' "${AK3_DIR}/anykernel.sh" | sed '$d' > /tmp/ak_show.sh
+              . /tmp/ak_show.sh
+              AKHOME="${AK3_DIR}"
+              ak_show_features
+            )
+            echo "--- Fin autoprueba ---"
+            cd "${AK3_DIR}"
+            ZIP="${ZIP_PREFIX}-${TAG}-$(date -u +%Y%m%d%H%M%S).zip"
+            7za a -tzip -mx9 -mmt=on "${{ github.workspace }}/$ZIP" ./* >/dev/null
+            cd "${{ github.workspace }}"
+            echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+          } 2>&1 | tee "$LOG_DIR/pack.log"
+
+      - name: ✏️ Subir zip a Actions
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: "${{ env.ZIP_NAME }}"
+          path: "${{ github.workspace }}/*.zip"
+          if-no-files-found: error
+
+      # ---------------------------------------------------------------------
+      # Informe de compilación: se genera SIEMPRE (éxito, fallo o cancelación)
+      # ---------------------------------------------------------------------
+      - name: 📝 Informe de compilación (éxito o fallo)
+        id: report
+        if: ${{ always() }}
+        shell: bash {0}   # sin -e: ningún comando debe cortar la creación del informe
+        env:
+          JOB_STATUS: ${{ job.status }}
+          O_CHECKOUT: ${{ steps.checkout.outcome }}
+          O_KSU: ${{ steps.ksu.outcome }}
+          O_SETUP: ${{ steps.setup.outcome }}
+          O_NOMOUNT: ${{ steps.nomount.outcome }}
+          O_NMCHECK: ${{ steps.nomount_check.outcome }}
+          O_PREP: ${{ steps.prep.outcome }}
+          O_CONFIG: ${{ steps.config.outcome }}
+          O_SELINUX: ${{ steps.selinux.outcome }}
+          O_HEADERS: ${{ steps.headers.outcome }}
+          O_VERSION: ${{ steps.version.outcome }}
+          O_BUILD: ${{ steps.build.outcome }}
+          O_PACK: ${{ steps.pack.outcome }}
+          O_UPLOAD: ${{ steps.upload.outcome }}
+        run: |
+          mkdir -p "$LOG_DIR"
+          R="$LOG_DIR/build-report.txt"
+          case "$JOB_STATUS" in
+            success)   RES="✅ ÉXITO" ;;
+            cancelled) RES="⏹️ CANCELADO" ;;
+            *)         RES="❌ FALLO" ;;
+          esac
+          NOW=$(date +%s); DUR=$(( NOW - ${T0:-$NOW} ))
+          REL=""
+          if [ -f kernel/out/include/generated/utsrelease.h ]; then
+            REL=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' kernel/out/include/generated/utsrelease.h)
+          fi
+          B="$LOG_DIR/build.log"
+          {
+            echo "===== HyperOS star: informe de compilación ====="
+            echo "Resultado: $RES"
+            echo "Fecha (UTC): $(date -u '+%F %T') | duración: $((DUR/60)) min $((DUR%60)) s"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (intento $GITHUB_RUN_ATTEMPT)"
+            echo "Kernel: $KERNEL_REPO @ $KERNEL_REF | commit: $(git -C kernel log -1 --format='%h %s' 2>/dev/null || echo n/d)"
+            echo "Defconfig: $DEFCONFIG | modo ligero: $LITE_BUILD | root: $ROOT_MODE | merge QGKI: $BUILD_OTHER_CONFIG"
+            echo "Versión del kernel compilado: ${REL:-(no se llegó a generar)}"
+            case "$REL" in *-dirty*) echo "AVISO: la versión aún lleva -dirty";; esac
+            if [ -n "$KSU_TOP" ] && [ -d "$KSU_TOP" ]; then
+              echo "KernelSU: ${KSU_TOP##*/} @ $(git -C "$KSU_TOP" log -1 --format='%h %s' 2>/dev/null)"
+            fi
+            echo "NoMount integrado: ${NOMOUNT_APPLIED:-no (omitido o no verificado)}$( [ -d kernel/NoMount ] && echo " | $(git -C kernel/NoMount describe --tags --always 2>/dev/null)" )"
+            echo
+            echo "--- Resultado por paso ---"
+            culprit=""
+            for s in CHECKOUT KSU SETUP NOMOUNT NMCHECK PREP CONFIG SELINUX HEADERS VERSION BUILD PACK UPLOAD; do
+              v="O_$s"
+              printf '%-9s %s\n' "$s" "${!v}"
+              if [ -z "$culprit" ] && [ "${!v}" = "failure" ]; then culprit="$s"; fi
+            done
+            [ "$JOB_STATUS" = "success" ] || echo "Primer paso con fallo: ${culprit:-(cancelado o sin determinar)}"
+            echo
+            echo "--- Configuración relevante (.config) ---"
+            if [ -f "$LOG_DIR/dotconfig.txt" ]; then
+              grep -E '^(# )?CONFIG_(KSU|LOCALVERSION|LTO_CLANG|CFI_CLANG|HEADERS_INSTALL|UAPI_HEADER_TEST)|NOMOUNT' "$LOG_DIR/dotconfig.txt" | head -n 40
+            else
+              echo "(no se llegó a generar .config)"
+            fi
+            echo
+            echo "--- Modificaciones del CI sobre las fuentes ---"
+            if [ -f "$LOG_DIR/version.log" ]; then sed -n '2,25p' "$LOG_DIR/version.log"; else echo "(paso de versión no ejecutado)"; fi
+            echo
+            echo "--- Compilación ---"
+            if [ -f "$B" ]; then
+              echo "warnings: $(grep -c ' warning: ' "$B")  | errores: $(grep -c -E ' error: |\*\*\* ' "$B")"
+              echo "Warnings por tipo (top 12):"
+              grep ' warning: ' "$B" | sed -nE 's/.*\[(-W[A-Za-z0-9=_+-]+)\]$/\1/p' | sort | uniq -c | sort -rn | head -n 12
+              echo "Mensajes de preinit de BakaSU:"
+              grep -iE 'preinit' "$B" | sort | uniq -c | head -n 6 || true
+              echo "BakaSU (método de hooks y versión):"
+              grep -E '^-- BakaSU( version| :|: using)|^-- SUSFS_VERSION' "$B" | head -n 8
+              echo "Avisos 'No such file' del make anidado: $(grep -c 'No such file or directory' "$B")"
+              echo "ccache:"
+              grep -E 'cache hit|cache miss|Hits:|Misses:|Cacheable calls' "$B" | tail -n 6
+            else
+              echo "(no hay build.log: no se llegó a compilar)"
+            fi
+            echo
+            if [ -f kernel/out/arch/arm64/boot/Image ]; then
+              echo "Image: $(stat -c %s kernel/out/arch/arm64/boot/Image) bytes"
+            fi
+            if [ -n "$ZIP_NAME" ] && [ -f "$GITHUB_WORKSPACE/$ZIP_NAME" ]; then
+              echo "ZIP: $ZIP_NAME | $(stat -c %s "$GITHUB_WORKSPACE/$ZIP_NAME") bytes"
+              echo "sha256: $(sha256sum "$GITHUB_WORKSPACE/$ZIP_NAME" | cut -d' ' -f1)"
+            fi
+            if [ -f "$LOG_DIR/pack.log" ] && grep -q '^--- Autoprueba de detección' "$LOG_DIR/pack.log"; then
+              echo
+              echo "--- Detección en la imagen (la que verás al flashear) ---"
+              sed -n '/^--- Autoprueba de detección/,/^--- Fin autoprueba/p' "$LOG_DIR/pack.log" | head -n 70
+            fi
+            if [ "$JOB_STATUS" != "success" ]; then
+              echo
+              echo "--- Errores detectados (máx. 60) ---"
+              (cd "$LOG_DIR" && grep -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error|no space left|cannot allocate memory|version .* not found|: not found|cannot open shared object|command not found|permission denied|^E: ' *.log 2>/dev/null | grep -v 'No such file or directory' | head -n 60)
+              echo
+              echo "--- Final del último log (120 líneas) ---"
+              last=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -n1)
+              if [ -n "$last" ]; then echo "[$(basename "$last")]"; tail -n 120 "$last"; else echo "(no hay logs de fase)"; fi
+            fi
+            echo
+            echo "--- Recursos del runner ---"
+            df -h / | tail -n 2
+            free -h | head -n 2
+          } > "$R" 2>&1
+
+          {
+            echo "### $RES · HyperOS star"
+            echo
+            echo '```'
+            head -n 90 "$R"
+            echo '```'
+            echo "Informe completo en el artifact **hyperos-informe-$GITHUB_RUN_NUMBER**."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📤 Subir informe y logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: hyperos-informe-${{ github.run_number }}
+          path: ${{ env.LOG_DIR }}
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: 💾 Guardar caché de ccache
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: "${{ env.CCACHE_DIR }}"
+          key: "ccache-hyperos-u24-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}"
