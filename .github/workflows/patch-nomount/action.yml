@@ -7,9 +7,36 @@ runs:
         if: env.NOMOUNT_ENABLE == 'true'
         shell: bash
         run: |
-          cd $GITHUB_WORKSPACE/device_kernel/
-          curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh | bash -s
+          cd "$GITHUB_WORKSPACE/device_kernel/"
 
+          # Pin NoMount to a fixed tag/commit so upstream changes can't break the build.
+          # It can be overridden from the workflow with: env: NOMOUNT_REF
+          NM_REF="${NOMOUNT_REF:-42d15fd}"
+
+          # Remember existing reject files so only the new ones are reported
+          find . -path ./out -prune -o \( -name '*.rej' -o -name '*.orig' \) -print \
+            | LC_ALL=C sort > "$RUNNER_TEMP/rej-before.txt"
+
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/maxsteeel/nomount/$NM_REF/kernel/setup.sh" \
+            -o "$RUNNER_TEMP/nomount-setup.sh"
+          bash "$RUNNER_TEMP/nomount-setup.sh" "$NM_REF"
+
+          # Verify the integration so a half-applied patch fails here and not later in BUILD
+          test -d NoMount/kernel/src || { echo "::error::NoMount/kernel/src not found"; exit 1; }
+          test -f fs/nomount/Kconfig || { echo "::error::fs/nomount/Kconfig not found (broken link)"; exit 1; }
+          grep -q 'nomount' fs/Makefile || { echo "::error::fs/Makefile has no NoMount entry"; exit 1; }
+          grep -q 'fs/nomount/Kconfig' fs/Kconfig || { echo "::error::fs/Kconfig has no NoMount source"; exit 1; }
+
+          find . -path ./out -prune -o \( -name '*.rej' -o -name '*.orig' \) -print \
+            | LC_ALL=C sort > "$RUNNER_TEMP/rej-after.txt"
+          new_rej=$(LC_ALL=C comm -13 "$RUNNER_TEMP/rej-before.txt" "$RUNNER_TEMP/rej-after.txt")
+          if [ -n "$new_rej" ]; then
+            echo "::error::NoMount left rejected patches:"
+            echo "$new_rej"
+            exit 1
+          fi
+
+          # Enable the config flag in the target defconfig
           echo "CONFIG_NOMOUNT=y" >> ./arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
 
-          echo "[+] Patched NoMount for your kernel successfully."
+          echo "[+] Patched NoMount $(git -C NoMount describe --tags --always 2>/dev/null) for your kernel successfully."
